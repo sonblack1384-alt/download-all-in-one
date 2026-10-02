@@ -156,9 +156,11 @@ function renderGroups(results) {
 
     const head = document.createElement('div');
     head.className = 'group-head';
-    const nowm = r.source === 'tiktok_no_watermark';
     const titleSuffix = r.title ? ` — ${r.title}` : '';
-    head.innerHTML = `<span class="url" title="${r.url}">${r.url}${titleSuffix}</span>${nowm ? '<span class="badge-nowm">✓ Không watermark</span>' : ''}`;
+    let badge = '';
+    if (r.source === 'tiktok_no_watermark') badge = '<span class="badge-nowm">✓ Không watermark</span>';
+    else if (r.source === 'douyin_browser') badge = '<span class="badge-nowm" style="background:#5aa0e0">✓ Qua trình duyệt thật</span>';
+    head.innerHTML = `<span class="url" title="${r.url}">${r.url}${titleSuffix}</span>${badge}`;
     group.appendChild(head);
 
     if (r.error) {

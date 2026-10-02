@@ -2,3 +2,8 @@ flask==3.0.3
 requests==2.32.3
 beautifulsoup4==4.12.3
 yt-dlp>=2026.8.19
+
+# playwright: TUỲ CHỌN, chỉ cần cho lớp dự phòng tải Douyin qua trình
+# duyệt thật (xem README mục Douyin). Không cài thì tool vẫn chạy bình
+# thường, chỉ riêng lớp dự phòng này bị bỏ qua.
+# playwright>=1.63.0

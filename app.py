@@ -33,7 +33,7 @@ REQUEST_TIMEOUT = 30
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif")
 VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
-TIKTOK_HOSTS = ("tiktok.com", "douyin.com")  # cùng công ty (ByteDance), tikwm.com hỗ trợ cả 2
+TIKTOK_HOSTS = ("tiktok.com", "douyin.com")  # cùng công ty (ByteDance) -- tikwm.com xác nhận hỗ trợ TikTok, Douyin thì chưa chắc (API không công bố rõ), nên có thêm lớp dự phòng douyin_via_browser() bên dưới
 
 MAX_URLS_PER_SCAN = 20
 MAX_ITEMS_PER_DOWNLOAD = 100
@@ -139,6 +139,44 @@ def tiktok_no_watermark(url: str) -> dict | None:
         return None
 
 
+def douyin_via_browser(url: str) -> dict | None:
+    """Lớp dự phòng CUỐI cho Douyin khi cả tikwm và yt-dlp đều thất bại.
+    Douyin yêu cầu 1 cookie (s_v_web_id) được chính JavaScript chống bot
+    của trang tạo ra tại thời điểm truy cập -- cookie tĩnh xuất từ trình
+    duyệt (cookies.txt) không đủ vì Douyin còn kiểm tra trình duyệt có
+    "giải" đúng bài toán JS đó không (đã xác nhận bằng cách đọc thẳng mã
+    nguồn yt-dlp: extractor/tiktok.py, class DouyinIE). Cách duy nhất đáng
+    tin cậy là dùng 1 trình duyệt thật (Playwright + Chromium headless) để
+    tự giải bài toán đó như người dùng thật, rồi đọc link video từ thẻ
+    <video> sau khi trang tải xong.
+
+    CHƯA kiểm chứng được với Douyin thật (môi trường phát triển công cụ
+    này bị chặn mạng tới douyin.com) -- chỉ xác nhận cơ chế Playwright
+    (goto/wait_for_selector/eval_on_selector) hoạt động đúng trên trang
+    khác. Cần người dùng tự thử trên máy thật và báo lại nếu còn lỗi.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(user_agent=HEADERS["User-Agent"])
+                page.goto(url, wait_until="networkidle", timeout=25000)
+                page.wait_for_selector("video", timeout=15000)
+                video_src = page.eval_on_selector("video", "el => el.currentSrc || el.src")
+                title = page.title()
+            finally:
+                browser.close()
+            if video_src:
+                return {"video": video_src, "title": title or "douyin"}
+    except Exception:
+        return None
+    return None
+
+
 def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
     """Trả về {images, videos, audios, ytdlp_videos, source, title}.
     - images/videos/audios: link tải trực tiếp (GET thẳng là ra file).
@@ -191,8 +229,22 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
                 "source": "tiktok_no_watermark",
                 "title": tk["title"],
             }
-        # tikwm lỗi/hết hạn -> rơi xuống nhánh thường bên dưới (vẫn thử
-        # yt-dlp, nhưng không đảm bảo chắc chắn không watermark nữa).
+        # tikwm lỗi/hết hạn: nếu là Douyin, thử trình duyệt thật trước khi
+        # rơi xuống yt-dlp (yt-dlp gần như chắc chắn cũng lỗi "Fresh
+        # cookies" với Douyin single-video do cùng 1 nguyên nhân gốc).
+        if "douyin.com" in urlparse(page_url).netloc.lower():
+            dv = douyin_via_browser(page_url)
+            if dv:
+                add(dv["video"], "video")
+                return {
+                    "images": [], "videos": sorted(u for u, k in found.items() if k == "video"),
+                    "audios": [], "ytdlp_videos": [],
+                    "source": "douyin_browser",
+                    "title": dv["title"],
+                }
+        # Mọi cách đều thất bại -> rơi xuống nhánh thường bên dưới (parse
+        # HTML + yt-dlp), gần như chắc chắn cũng không ra gì với Douyin
+        # nhưng vẫn thử cho các link TikTok edge-case khác.
 
     # Bước 1: thử tải HTML thô. Nhiều trang (Facebook, Instagram...) chặn
     # kiểu request này hoặc cần JavaScript mới render ra nội dung -- KHÔNG
