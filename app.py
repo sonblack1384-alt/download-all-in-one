@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bulk media downloader -- dán 1 hoặc nhiều link, quét ảnh/video/audio, chọn
-và tải hàng loạt về 1 file ZIP. Có xử lý riêng cho TikTok để tải bản KHÔNG
+và tải hàng loạt về 1 file ZIP. Có xử lý riêng cho TikTok/Douyin để tải bản KHÔNG
 watermark (lấy thẳng link gốc từ API công khai, không phải xử lý ảnh xoá logo).
 
 Run:
@@ -31,7 +31,7 @@ REQUEST_TIMEOUT = 30
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif")
 VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
-TIKTOK_HOSTS = ("tiktok.com",)
+TIKTOK_HOSTS = ("tiktok.com", "douyin.com")  # cùng công ty (ByteDance), tikwm.com hỗ trợ cả 2
 
 MAX_URLS_PER_SCAN = 20
 MAX_ITEMS_PER_DOWNLOAD = 60
@@ -103,8 +103,10 @@ def scan_page(page_url: str) -> dict:
         full = urljoin(page_url, raw_url)
         found.setdefault(full, kind)
 
-    # TikTok: ưu tiên API không-watermark trước, đáng tin hơn và nhanh hơn
-    # parse HTML (TikTok web là SPA nặng JS, parse HTML thô gần như vô ích).
+    # TikTok/Douyin: ưu tiên API không-watermark trước, đáng tin hơn và
+    # nhanh hơn parse HTML (cả 2 là SPA nặng JS, parse HTML thô gần như vô
+    # ích). Douyin chưa test được thật (mạng môi trường dev chặn douyin.com)
+    # -- nếu tikwm không hỗ trợ Douyin, code tự rơi về nhánh thường bên dưới.
     if is_tiktok_url(page_url):
         tk = tiktok_no_watermark(page_url)
         if tk:
