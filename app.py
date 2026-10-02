@@ -26,7 +26,7 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     )
 }
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 30
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif")
 VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
@@ -49,11 +49,8 @@ def best_srcset_url(srcset: str) -> str | None:
 
 
 def scan_page(page_url: str) -> dict:
-    resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-
     found: dict[str, str] = {}  # url -> "image" | "video"
+    fetch_error: str | None = None
 
     def add(raw_url: str | None, kind: str):
         if not raw_url or raw_url.startswith("data:"):
@@ -61,39 +58,52 @@ def scan_page(page_url: str) -> dict:
         full = urljoin(page_url, raw_url)
         found.setdefault(full, kind)
 
-    for img in soup.find_all("img"):
-        add(img.get("src"), "image")
-        add(img.get("data-src"), "image")
-        srcset = img.get("srcset")
-        if srcset:
-            add(best_srcset_url(srcset), "image")
+    # Bước 1: thử tải HTML thô (nhanh, không cần trình duyệt). Nhiều trang
+    # (Facebook, Instagram, TikTok...) chặn request kiểu này (403/400) hoặc
+    # trả về trang rỗng vì nội dung load bằng JavaScript -- KHÔNG bỏ cuộc ở
+    # đây, ghi lại lỗi rồi vẫn thử yt-dlp ở bước 2 (yt-dlp có cách lấy dữ
+    # liệu riêng, không phụ thuộc vào việc parse HTML này).
+    try:
+        resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-    for video in soup.find_all("video"):
-        add(video.get("src"), "video")
-        add(video.get("poster"), "image")
-        for source in video.find_all("source"):
+        for img in soup.find_all("img"):
+            add(img.get("src"), "image")
+            add(img.get("data-src"), "image")
+            srcset = img.get("srcset")
+            if srcset:
+                add(best_srcset_url(srcset), "image")
+
+        for video in soup.find_all("video"):
+            add(video.get("src"), "video")
+            add(video.get("poster"), "image")
+            for source in video.find_all("source"):
+                add(source.get("src"), "video")
+
+        for source in soup.find_all("source"):
             add(source.get("src"), "video")
 
-    for source in soup.find_all("source"):
-        add(source.get("src"), "video")
-
-    for a in soup.find_all("a"):
-        href = a.get("href")
-        if not href:
-            continue
-        full = urljoin(page_url, href)
-        if is_media_url(full, IMAGE_EXTS):
-            add(full, "image")
-        elif is_media_url(full, VIDEO_EXTS):
-            add(full, "video")
+        for a in soup.find_all("a"):
+            href = a.get("href")
+            if not href:
+                continue
+            full = urljoin(page_url, href)
+            if is_media_url(full, IMAGE_EXTS):
+                add(full, "image")
+            elif is_media_url(full, VIDEO_EXTS):
+                add(full, "video")
+    except requests.RequestException as e:
+        fetch_error = str(e)
 
     images = sorted(u for u, k in found.items() if k == "image")
     videos = sorted(u for u, k in found.items() if k == "video")
 
-    # Best-effort: if the page itself is a recognized video page (YouTube,
-    # TikTok, Twitter/X, Vimeo, ...), try yt-dlp so single-video pages work
-    # too, not just pages with plain <img>/<video> tags.
+    # Bước 2: luôn thử yt-dlp (chạy dù bước 1 lỗi hay không) -- hỗ trợ
+    # hàng nghìn site video (YouTube, TikTok, Twitter/X, Vimeo, Facebook
+    # công khai...), có cơ chế bắt dữ liệu riêng mạnh hơn request thường.
     ytdlp_video = None
+    ytdlp_error = None
     try:
         import yt_dlp
 
@@ -102,10 +112,19 @@ def scan_page(page_url: str) -> dict:
             if info and info.get("url"):
                 title = re.sub(r"[^\w\-. ]", "_", info.get("title") or "video")[:80]
                 ytdlp_video = {"page_url": page_url, "title": title}
-    except Exception:
-        ytdlp_video = None
+    except Exception as e:  # noqa: BLE001
+        ytdlp_error = str(e)
+
+    if not images and not videos and not ytdlp_video:
+        # Cả 2 cách đều không ra gì -- báo lỗi rõ ràng thay vì chỉ "không tìm thấy".
+        reason = fetch_error or ytdlp_error or "trang không có ảnh/video nào đọc được"
+        raise ScanFailed(reason)
 
     return {"images": images, "videos": videos, "ytdlp_video": ytdlp_video}
+
+
+class ScanFailed(Exception):
+    pass
 
 
 @app.route("/")
@@ -120,11 +139,8 @@ def api_scan():
         return jsonify({"error": "URL không hợp lệ -- phải bắt đầu bằng http:// hoặc https://"}), 400
     try:
         result = scan_page(page_url)
-    except requests.RequestException as e:
-        return jsonify({"error": f"Không mở được trang: {e}"}), 400
-    total = len(result["images"]) + len(result["videos"]) + (1 if result["ytdlp_video"] else 0)
-    if total == 0:
-        return jsonify({"error": "Không tìm thấy ảnh/video nào trên trang này."}), 404
+    except ScanFailed as e:
+        return jsonify({"error": f"Không quét được trang này: {e}"}), 400
     return jsonify(result)
 
 
