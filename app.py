@@ -218,12 +218,15 @@ def _douyin_probe_via_browser(url: str) -> dict:
         elif "audio" in ctype and not audio_url:
             audio_url = response.url
 
+    print(f"[douyin] Đang mở trình duyệt thật -> {url}", flush=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page(user_agent=HEADERS["User-Agent"])
             page.on("response", on_response)
+            print("[douyin] Đang tải trang (tối đa 25s)...", flush=True)
             page.goto(url, wait_until="networkidle", timeout=25000)
+            print("[douyin] Trang đã tải, đang tìm thẻ <video> (tối đa 15s)...", flush=True)
             page.wait_for_selector("video", timeout=15000)
             if not video_url:
                 video_url = page.eval_on_selector("video", "el => el.currentSrc || el.src")
@@ -233,6 +236,7 @@ def _douyin_probe_via_browser(url: str) -> dict:
 
     if not video_url:
         raise RuntimeError("Không lấy được link video Douyin qua trình duyệt thật")
+    print(f"[douyin] Lấy link thành công: video={'co' if video_url else 'khong'}, audio={'co' if audio_url else 'khong'}", flush=True)
     return {"video": video_url, "audio": audio_url, "title": title}
 
 
@@ -242,12 +246,16 @@ def _with_retries(fn, attempts: int = 3, base_delay: float = 3.0):
     kiểm chứng (dự án DichPhimPro)."""
     last_exc = None
     for i in range(attempts):
+        print(f"[douyin] Lần thử {i + 1}/{attempts}...", flush=True)
         try:
             return fn()
         except Exception as e:  # noqa: BLE001
             last_exc = e
+            print(f"[douyin] Lần {i + 1} lỗi: {e}", flush=True)
             if i < attempts - 1:
-                time.sleep(base_delay * (i + 1))
+                wait_s = base_delay * (i + 1)
+                print(f"[douyin] Chờ {wait_s:.0f}s rồi thử lại...", flush=True)
+                time.sleep(wait_s)
     raise last_exc
 
 
@@ -535,21 +543,30 @@ def _download_douyin_via_browser(page_url: str, tmp_dir: Path):
     result = _douyin_probe_via_browser(page_url)
     title = re.sub(r"[^\w\-. ]", "_", result["title"])[:80] or "douyin"
 
+    print(f"[douyin] Đang tải video: {result['video'][:80]}...", flush=True)
     video_path = tmp_dir / f"{title}_video.mp4"
     _stream_download(result["video"], video_path)
 
     if result["audio"] and result["audio"] != result["video"]:
+        print(f"[douyin] Đang tải audio riêng: {result['audio'][:80]}...", flush=True)
         audio_path = tmp_dir / f"{title}_audio.m4a"
         _stream_download(result["audio"], audio_path)
+        print("[douyin] Đang ghép video+audio bằng ffmpeg...", flush=True)
         out_path = tmp_dir / f"{title}.mp4"
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path), "-c", "copy", str(out_path)],
-            check=True, capture_output=True,
-        )
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path), "-c", "copy", str(out_path)],
+                check=True, capture_output=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("Thiếu ffmpeg -- cài ffmpeg và thêm vào PATH (xem README) rồi thử lại.")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ffmpeg lỗi khi ghép: {e.stderr.decode(errors='replace')[-500:]}")
         video_path.unlink(missing_ok=True)
         audio_path.unlink(missing_ok=True)
     else:
         video_path.rename(tmp_dir / f"{title}.mp4")
+    print(f"[douyin] Xong: {title}.mp4", flush=True)
 
 
 if __name__ == "__main__":
