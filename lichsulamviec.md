@@ -27,6 +27,43 @@ Repo: https://github.com/sonblack1384-alt/download-all-in-one
   - Flask chạy `threaded=True` để xử lý được song song: 1 thread tải nền + nhiều request poll status liên tục.
   - **Đã test thật bằng curl** (giả lập đúng chuỗi gọi fetch của JS): start → poll status thấy log tăng dần đúng thứ tự → done → GET result trả ZIP thật mở được; test riêng ca lỗi (link 404) → log hiện đúng dòng lỗi, job vẫn "done" với ZIP chứa file `LOI_*.txt`; test riêng nút Huỷ (job Douyin giả, đang ở vòng thử lại) → gọi cancel → status chuyển `cancelled` kèm log "Đã huỷ theo yêu cầu." — xác nhận cơ chế huỷ hoạt động đúng ở cả bước đang chờ (sleep) giữa các lần thử. Chưa test được việc bấm nút trên trình duyệt thật (không có browser trong sandbox) — logic JS chỉ soát qua `node -e "new Function(...)"` để chắc không lỗi cú pháp.
 
+### Bug thật đã tìm và sửa (2026-10-02, từ log thật người dùng gửi)
+Người dùng thử link Douyin thật (dạng `?modal_id=...` từ trang tìm kiếm), bảng
+nhật ký cho thấy cả 3 lần thử đều lỗi giống hệt nhau: `Page.goto: Timeout
+25000ms exceeded`, job xong với ZIP chỉ chứa `LOI_douyin_000.txt` (không phải
+video thật) — khiến người dùng tưởng tool tải "rác". Root cause tìm được bằng
+cách đọc code: `page.goto(url, wait_until="networkidle", timeout=25000)` —
+`networkidle` yêu cầu trang phải "im lặng" hoàn toàn (không còn request
+mạng nào trong 500ms) mới coi là tải xong, nhưng các trang SPA hiện đại như
+Douyin luôn có request nền chạy liên tục (quảng cáo, đo lường, heartbeat)
+nên **không bao giờ** đạt trạng thái đó — nghĩa là bước `goto` sẽ timeout
+100% MỌI LẦN, bất kể mạng nhanh/chậm/có bị chặn bot hay không. Đây là lỗi
+code thật, không phải do Douyin chặn.
+
+**Đã tái hiện và xác nhận bằng test thật** (không cần mạng ngoài): dựng 1
+trang HTML local có vòng lặp `setInterval` gọi `fetch()` liên tục mỗi 300ms
+(mô phỏng đúng hành vi SPA của Douyin) — `wait_until="networkidle"` timeout
+sau đúng 8s như dự đoán, trong khi `wait_until="domcontentloaded"` + chờ
+riêng thẻ `<video>` bằng `wait_for_selector` thành công trong 0.05s.
+
+**Đã sửa** `_douyin_probe_via_browser()`: đổi `networkidle` → `domcontentloaded`
+(chỉ chờ DOM dựng xong, không chờ mạng im lặng), phần video do JS chèn vào
+sau được chờ riêng bằng `wait_for_selector("video", timeout=20000)`. Thêm
+`page.add_init_script(...)` ẩn `navigator.webdriver` (giảm khả năng bị phát
+hiện là trình duyệt tự động — vẫn chưa chắc đủ nếu Douyin có thêm lớp chống
+bot khác). Khi không tìm thấy `<video>`, log giờ in thêm tiêu đề trang + URL
+thực tế lúc đó để biết có bị chuyển hướng sang trang xác minh/đăng nhập hay
+không, dễ chẩn đoán hơn nếu vẫn lỗi.
+
+**Vẫn CHƯA kiểm chứng được với Douyin thật** (sandbox chặn mạng tới
+douyin.com) — chỉ xác nhận: (a) root cause networkidle là có thật và đã sửa
+đúng cách bằng test tái hiện, (b) cú pháp/luồng code chạy được với Chromium
+thật (test bằng trang local). Cần người dùng tải code mới, thử lại đúng link
+Douyin đã lỗi, nếu vẫn lỗi thì bảng log mới sẽ cho biết trang thực tế dừng ở
+đâu (tiêu đề + URL) để chẩn đoán tiếp (khả năng Douyin có thêm chặn khác, ví
+dụ trang xác minh/captcha — lúc đó mới cần `playwright-stealth` hoặc cookie
+khác).
+
 ### Vấn đề đã gặp và đã xử lý
 - **Môi trường dev (Claude Code Remote) có chính sách mạng giới hạn domain** — chỉ gọi được `pypi.org`/`files.pythonhosted.org` (bypass proxy) và vài domain khác đã allowlist từ trước; **không** gọi được `tiktok.com`, `douyin.com`, `tikwm.com`, `youtube.com`, `facebook.com`... Hệ quả: nhiều tính năng chỉ kiểm chứng được logic/code path (qua mock hoặc test với site thay thế như pypi.org), KHÔNG kiểm chứng được hành vi thật với các platform đích. Luôn nói rõ điều này với người dùng, không nhận là "đã test" khi chỉ test được logic.
 - **File mẫu test hỏng do thiếu header** (bài học từ dự án khác, áp dụng chung): luôn kiểm tra output file thật (`file`, `unzip -l`, ffprobe...) trước khi báo đã xong.

@@ -74,7 +74,7 @@ playwright install chromium
 ```
 (Tải khoảng 150-300MB cho Chromium, chỉ 1 lần.) Không cài thì tool vẫn hoạt động bình thường cho mọi link khác, chỉ riêng lớp dự phòng này cho Douyin bị bỏ qua.
 
-**Lưu ý thành thật:** cơ chế bắt link video+audio qua trình duyệt **chưa được kiểm chứng với Douyin thật** (môi trường phát triển công cụ bị chặn mạng tới douyin.com) — chỉ xác nhận: (a) logic chuỗi dự phòng đúng, (b) cơ chế tải+ghép ffmpeg hoạt động đúng khi test với file giả lập, (c) Playwright chạy đúng cú pháp trên trang khác. Cần bạn tự thử trên máy và báo lại kết quả.
+**Lưu ý thành thật:** cơ chế bắt link video+audio qua trình duyệt **chưa được kiểm chứng với Douyin thật** (môi trường phát triển công cụ bị chặn mạng tới douyin.com) — chỉ xác nhận: (a) logic chuỗi dự phòng đúng, (b) cơ chế tải+ghép ffmpeg hoạt động đúng khi test với file giả lập, (c) Playwright chạy đúng cú pháp trên trang khác, (d) đã tìm và sửa 1 bug thật (chờ `networkidle` khiến mở trang luôn timeout trên site có request nền liên tục — xem `lichsulamviec.md` mục "Bug thật đã tìm và sửa"). Cần bạn tự thử trên máy và báo lại kết quả; nếu vẫn lỗi, bảng nhật ký tiến trình sẽ in thêm tiêu đề trang + URL thực tế lúc lỗi để chẩn đoán tiếp.
 
 ## Giới hạn (nói thật, không hứa suông "tải được mọi thứ")
 

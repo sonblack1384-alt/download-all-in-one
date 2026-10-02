@@ -254,12 +254,33 @@ def _douyin_probe_via_browser(url: str, log=print) -> dict:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"],
+                viewport={"width": 1280, "height": 800},
+                locale="vi-VN",
+            )
+            # Trang Douyin hiện đại luôn có request nền chạy liên tục (quảng
+            # cáo, đo lường...) nên KHÔNG BAO GIỜ đạt "networkidle" -- dùng
+            # networkidle làm điều kiện chờ sẽ timeout 100% mọi lần, bất kể
+            # mạng nhanh/chậm. Chỉ chờ DOM dựng xong, phần video do JS chèn
+            # vào sau được chờ riêng bằng wait_for_selector bên dưới.
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
             page.on("response", on_response)
-            log("[douyin] Đang tải trang (tối đa 25s)...")
-            page.goto(url, wait_until="networkidle", timeout=25000)
-            log("[douyin] Trang đã tải, đang tìm thẻ <video> (tối đa 15s)...")
-            page.wait_for_selector("video", timeout=15000)
+            log("[douyin] Đang mở trang (tối đa 25s)...")
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            log("[douyin] Trang đã mở, đang tìm thẻ <video> (tối đa 20s)...")
+            try:
+                page.wait_for_selector("video", timeout=20000)
+            except Exception:
+                raise RuntimeError(
+                    f"Không tìm thấy thẻ <video> sau khi tải trang "
+                    f"(tiêu đề trang lúc đó: \"{page.title()}\", "
+                    f"url thực tế: {page.url}) -- có thể Douyin chặn bot "
+                    f"hoặc chuyển hướng sang trang xác minh."
+                )
+            page.wait_for_timeout(1500)  # chờ thêm chút để network response video/audio kịp bắt
             if not video_url:
                 video_url = page.eval_on_selector("video", "el => el.currentSrc || el.src")
             title = page.title() or "douyin"
@@ -267,7 +288,7 @@ def _douyin_probe_via_browser(url: str, log=print) -> dict:
             browser.close()
 
     if not video_url:
-        raise RuntimeError("Không lấy được link video Douyin qua trình duyệt thật")
+        raise RuntimeError("Tìm thấy thẻ <video> nhưng không lấy được link -- có thể Douyin yêu cầu đăng nhập hoặc đổi cơ chế phát video")
     log(f"[douyin] Lấy link thành công: video={'co' if video_url else 'khong'}, audio={'co' if audio_url else 'khong'}")
     return {"video": video_url, "audio": audio_url, "title": title}
 
