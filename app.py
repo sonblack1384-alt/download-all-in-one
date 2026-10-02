@@ -110,6 +110,21 @@ def tiktok_profile_username(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def fetch_og_image(url: str, timeout: float = 8.0) -> str | None:
+    """Lấy nhanh ảnh thumbnail từ thẻ <meta property="og:image"> của trang --
+    hầu hết site (kể cả SPA nặng JS như Douyin/TikTok) vẫn render thẻ này ở
+    HTML gốc để mạng xã hội hiện preview khi chia sẻ link, nên lấy được mà
+    KHÔNG cần mở trình duyệt thật (nhanh, rẻ). Best-effort, graceful-fail."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=timeout)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tag = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "og:image"})
+        return tag.get("content") if tag else None
+    except Exception:
+        return None
+
+
 def tiktok_profile_videos(username: str, cap: int) -> list[dict]:
     """Gọi API tikwm.com/api/user/posts -- lấy danh sách video KHÔNG
     watermark của 1 trang cá nhân TikTok. Best-effort: tikwm có thể đổi
@@ -296,10 +311,11 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
         # xử lý LÚC TẢI (không mở trình duyệt ở bước quét -- chậm và không
         # cần thiết nếu cuối cùng người dùng không chọn tải item này).
         if "douyin.com" in urlparse(page_url).netloc.lower():
+            thumb = fetch_og_image(page_url)  # best-effort, không cần trình duyệt
             return {
                 "images": [], "videos": [], "audios": [],
                 "ytdlp_videos": [],
-                "douyin_items": [{"page_url": page_url, "title": "Douyin (qua trình duyệt thật)"}],
+                "douyin_items": [{"page_url": page_url, "title": "Douyin (qua trình duyệt thật)", "thumbnail": thumb}],
                 "source": "douyin_browser",
                 "title": None,
             }
@@ -378,10 +394,12 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
                     if not vid_url:
                         continue
                     title = re.sub(r"[^\w\-. ]", "_", entry.get("title") or "video")[:80]
-                    ytdlp_videos.append({"page_url": vid_url, "title": title})
+                    thumb = entry.get("thumbnail") or (entry.get("thumbnails") or [{}])[-1].get("url")
+                    ytdlp_videos.append({"page_url": vid_url, "title": title, "thumbnail": thumb})
             elif info and (info.get("url") or info.get("webpage_url") or info.get("formats")):
                 title = re.sub(r"[^\w\-. ]", "_", info.get("title") or "video")[:80]
-                ytdlp_videos.append({"page_url": page_url, "title": title})
+                thumb = info.get("thumbnail") or (info.get("thumbnails") or [{}])[-1].get("url")
+                ytdlp_videos.append({"page_url": page_url, "title": title, "thumbnail": thumb})
     except Exception as e:  # noqa: BLE001
         ytdlp_error = str(e)
 

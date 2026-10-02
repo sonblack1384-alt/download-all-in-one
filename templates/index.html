@@ -124,13 +124,15 @@ function makeCard(kind, url, extra) {
   } else if (kind === 'audio') {
     card.innerHTML = `<div class="icon-tile">🎵</div><span class="badge">audio</span>`;
   } else if (kind === 'ytdlp') {
-    card.innerHTML = `<div class="icon-tile">🎬</div><span class="badge">${extra.title || 'video trang'}</span>
+    const thumb = extra.thumbnail ? `<img src="${extra.thumbnail}" loading="lazy" onerror="this.remove()">` : `<div class="icon-tile">🎬</div>`;
+    card.innerHTML = `${thumb}<span class="badge">${extra.title || 'video trang'}</span>
       <div class="mode-toggle">
         <button type="button" class="mode-btn active" data-mode="video">Video</button>
         <button type="button" class="mode-btn" data-mode="audio">MP3</button>
       </div>`;
   } else if (kind === 'douyin') {
-    card.innerHTML = `<div class="icon-tile">🥢</div><span class="badge">Douyin qua trình duyệt</span>`;
+    const thumb = extra.thumbnail ? `<img src="${extra.thumbnail}" loading="lazy" onerror="this.remove()">` : `<div class="icon-tile">🥢</div>`;
+    card.innerHTML = `${thumb}<span class="badge">Douyin qua trình duyệt</span>`;
   }
 
   card.addEventListener('click', (e) => {
