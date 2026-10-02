@@ -2,6 +2,8 @@
 """Bulk media downloader -- dán 1 hoặc nhiều link, quét ảnh/video/audio, chọn
 và tải hàng loạt về 1 file ZIP. Có xử lý riêng cho TikTok/Douyin để tải bản KHÔNG
 watermark (lấy thẳng link gốc từ API công khai, không phải xử lý ảnh xoá logo).
+Tuỳ chọn tải cả playlist/kênh/trang cá nhân khi dán 1 link (giới hạn
+PLAYLIST_CAP video/lần để tránh quá tải).
 
 Run:
     pip install -r requirements.txt
@@ -34,7 +36,8 @@ AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
 TIKTOK_HOSTS = ("tiktok.com", "douyin.com")  # cùng công ty (ByteDance), tikwm.com hỗ trợ cả 2
 
 MAX_URLS_PER_SCAN = 20
-MAX_ITEMS_PER_DOWNLOAD = 60
+MAX_ITEMS_PER_DOWNLOAD = 100
+PLAYLIST_CAP = 30  # trần an toàn khi dán link playlist/kênh/trang cá nhân -- tránh treo máy/quá tải site đích
 
 # Nếu đặt 1 file cookies.txt (định dạng Netscape, xuất bằng extension trình
 # duyệt như "Get cookies.txt LOCALLY") cùng thư mục với app.py, yt-dlp sẽ
@@ -62,6 +65,40 @@ def is_media_url(url: str, exts: tuple[str, ...]) -> bool:
 
 def is_tiktok_url(url: str) -> bool:
     return any(h in urlparse(url).netloc.lower() for h in TIKTOK_HOSTS)
+
+
+def tiktok_profile_username(url: str) -> str | None:
+    """Nếu url là trang cá nhân TikTok (vd tiktok.com/@ten, không phải 1
+    video cụ thể), trả về username. Dùng để tải hàng loạt video của 1 kênh.
+    """
+    if "tiktok.com" not in urlparse(url).netloc.lower():
+        return None
+    m = re.match(r"^/@([\w.\-]+)/?$", urlparse(url).path)
+    return m.group(1) if m else None
+
+
+def tiktok_profile_videos(username: str, cap: int) -> list[dict]:
+    """Gọi API tikwm.com/api/user/posts -- lấy danh sách video KHÔNG
+    watermark của 1 trang cá nhân TikTok. Best-effort: tikwm có thể đổi
+    cấu trúc response, nên luôn trả [] thay vì crash nếu không khớp.
+    """
+    try:
+        resp = requests.get(
+            "https://www.tikwm.com/api/user/posts",
+            params={"unique_id": f"@{username}", "count": min(cap, 30)},
+            headers=HEADERS, timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("code") != 0:
+            return []
+        videos = (payload.get("data") or {}).get("videos") or []
+        return [
+            {"video": v["play"], "title": v.get("title") or "tiktok"}
+            for v in videos[:cap] if v.get("play")
+        ]
+    except Exception:
+        return []
 
 
 def best_srcset_url(srcset: str) -> str | None:
@@ -102,11 +139,12 @@ def tiktok_no_watermark(url: str) -> dict | None:
         return None
 
 
-def scan_page(page_url: str) -> dict:
-    """Trả về {images, videos, audios, ytdlp_video, source, title}.
+def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
+    """Trả về {images, videos, audios, ytdlp_videos, source, title}.
     - images/videos/audios: link tải trực tiếp (GET thẳng là ra file).
-    - ytdlp_video: {page_url, title} khi cần yt-dlp xử lý riêng lúc tải
-      (một số site không cho hotlink trực tiếp CDN).
+    - ytdlp_videos: list [{page_url, title}, ...] -- 1 phần tử cho 1 video
+      đơn, NHIỀU phần tử nếu link là playlist/kênh và allow_playlist=True
+      (yt-dlp tự liệt kê, giới hạn PLAYLIST_CAP video để tránh quá tải).
     - source: "tiktok_no_watermark" | "html" | "ytdlp" -- để giao diện báo
       rõ đã dùng cách nào (đặc biệt để xác nhận đã tải được bản không logo).
     """
@@ -120,9 +158,22 @@ def scan_page(page_url: str) -> dict:
 
     # TikTok/Douyin: ưu tiên API không-watermark trước, đáng tin hơn và
     # nhanh hơn parse HTML (cả 2 là SPA nặng JS, parse HTML thô gần như vô
-    # ích). Douyin chưa test được thật (mạng môi trường dev chặn douyin.com)
-    # -- nếu tikwm không hỗ trợ Douyin, code tự rơi về nhánh thường bên dưới.
+    # ích). Douyin: extractor yt-dlp hiện hay gãy do site đổi cơ chế chống
+    # bot liên tục -- tikwm thường vẫn ổn hơn vì không phụ thuộc yt-dlp.
     if is_tiktok_url(page_url):
+        if allow_playlist:
+            username = tiktok_profile_username(page_url)
+            if username:
+                profile_videos = tiktok_profile_videos(username, PLAYLIST_CAP)
+                if profile_videos:
+                    for v in profile_videos:
+                        add(v["video"], "video")
+                    return {
+                        "images": [], "videos": sorted(u for u, k in found.items() if k == "video"),
+                        "audios": [], "ytdlp_videos": [],
+                        "source": "tiktok_no_watermark",
+                        "title": f"@{username} ({len(profile_videos)} video)",
+                    }
         tk = tiktok_no_watermark(page_url)
         if tk:
             add(tk["video"], "video")
@@ -136,7 +187,7 @@ def scan_page(page_url: str) -> dict:
                 "images": sorted(u for u, k in found.items() if k == "image"),
                 "videos": sorted(u for u, k in found.items() if k == "video"),
                 "audios": sorted(u for u, k in found.items() if k == "audio"),
-                "ytdlp_video": None,
+                "ytdlp_videos": [],
                 "source": "tiktok_no_watermark",
                 "title": tk["title"],
             }
@@ -193,27 +244,43 @@ def scan_page(page_url: str) -> dict:
 
     # Bước 2: luôn thử yt-dlp (chạy dù bước 1 lỗi hay không) -- hỗ trợ hàng
     # nghìn site video (YouTube, Twitter/X, Vimeo, Facebook công khai...).
-    ytdlp_video = None
+    # allow_playlist=True: nếu link là playlist/kênh, liệt kê tối đa
+    # PLAYLIST_CAP video thay vì chỉ lấy 1 video đầu.
+    ytdlp_videos: list[dict] = []
     ytdlp_error = None
     try:
         import yt_dlp
 
-        with yt_dlp.YoutubeDL({**ytdlp_base_opts(), "skip_download": True}) as ydl:
+        opts = {**ytdlp_base_opts(), "skip_download": True, "noplaylist": not allow_playlist}
+        if allow_playlist:
+            opts["playlistend"] = PLAYLIST_CAP
+            opts["extract_flat"] = "in_playlist"  # chỉ liệt kê, không phân tích từng video -- nhanh hơn nhiều
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(page_url, download=False)
-            if info and info.get("url"):
+            entries = info.get("entries") if info else None
+            if entries:
+                for entry in list(entries)[:PLAYLIST_CAP]:
+                    if not entry:
+                        continue
+                    vid_url = entry.get("webpage_url") or entry.get("url")
+                    if not vid_url:
+                        continue
+                    title = re.sub(r"[^\w\-. ]", "_", entry.get("title") or "video")[:80]
+                    ytdlp_videos.append({"page_url": vid_url, "title": title})
+            elif info and (info.get("url") or info.get("webpage_url") or info.get("formats")):
                 title = re.sub(r"[^\w\-. ]", "_", info.get("title") or "video")[:80]
-                ytdlp_video = {"page_url": page_url, "title": title}
+                ytdlp_videos.append({"page_url": page_url, "title": title})
     except Exception as e:  # noqa: BLE001
         ytdlp_error = str(e)
 
-    if not images and not videos and not audios and not ytdlp_video:
+    if not images and not videos and not audios and not ytdlp_videos:
         reason = fetch_error or ytdlp_error or "trang không có ảnh/video nào đọc được"
         raise ScanFailed(reason)
 
     return {
         "images": images, "videos": videos, "audios": audios,
-        "ytdlp_video": ytdlp_video, "source": "ytdlp" if ytdlp_video else "html",
-        "title": None,
+        "ytdlp_videos": ytdlp_videos, "source": "ytdlp" if ytdlp_videos else "html",
+        "title": f"{len(ytdlp_videos)} video" if len(ytdlp_videos) > 1 else None,
     }
 
 
@@ -225,7 +292,9 @@ def index():
 @app.route("/api/scan_batch", methods=["POST"])
 def api_scan_batch():
     """Quét 1 hoặc nhiều link cùng lúc (mỗi dòng 1 link ở giao diện)."""
-    raw_urls = (request.json or {}).get("urls", [])
+    body = request.json or {}
+    raw_urls = body.get("urls", [])
+    allow_playlist = bool(body.get("allow_playlist"))
     urls = [u.strip() for u in raw_urls if u and u.strip()][:MAX_URLS_PER_SCAN]
     if not urls:
         return jsonify({"error": "Chưa nhập link nào."}), 400
@@ -236,7 +305,7 @@ def api_scan_batch():
             results.append({"url": u, "error": "URL không hợp lệ -- phải bắt đầu bằng http:// hoặc https://"})
             continue
         try:
-            r = scan_page(u)
+            r = scan_page(u, allow_playlist=allow_playlist)
             r["url"] = u
             results.append(r)
         except ScanFailed as e:

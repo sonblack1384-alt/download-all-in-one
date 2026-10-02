@@ -44,7 +44,10 @@
   <p class="sub">Dán 1 hoặc nhiều link (mỗi dòng 1 link), quét toàn bộ ảnh/video/audio, chọn và tải hàng loạt về 1 file ZIP. Link TikTok tự động tải bản <b>không watermark</b>. Chỉ dùng cho nội dung bạn có quyền tải.</p>
 
   <textarea id="urlInput" placeholder="https://...&#10;https://... (có thể dán nhiều link, mỗi dòng 1 cái)"></textarea>
-  <div class="scan-row">
+  <div class="scan-row" style="justify-content:space-between;align-items:center">
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="allowPlaylist"> Tải cả playlist/kênh/trang cá nhân nếu link là 1 danh sách (tối đa 30 video)
+    </label>
     <button id="scanBtn" onclick="scan()">Quét</button>
   </div>
   <div id="status"></div>
@@ -88,10 +91,11 @@ async function scan() {
   allItems = [];
   selected = new Set();
 
+  const allowPlaylist = document.getElementById('allowPlaylist').checked;
   try {
     const res = await fetch('/api/scan_batch', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls})
+      body: JSON.stringify({urls, allow_playlist: allowPlaylist})
     });
     const data = await res.json();
     if (!res.ok) { status.textContent = data.error || 'Lỗi không xác định.'; return; }
@@ -153,7 +157,8 @@ function renderGroups(results) {
     const head = document.createElement('div');
     head.className = 'group-head';
     const nowm = r.source === 'tiktok_no_watermark';
-    head.innerHTML = `<span class="url" title="${r.url}">${r.url}</span>${nowm ? '<span class="badge-nowm">✓ Không watermark</span>' : ''}`;
+    const titleSuffix = r.title ? ` — ${r.title}` : '';
+    head.innerHTML = `<span class="url" title="${r.url}">${r.url}${titleSuffix}</span>${nowm ? '<span class="badge-nowm">✓ Không watermark</span>' : ''}`;
     group.appendChild(head);
 
     if (r.error) {
@@ -170,9 +175,7 @@ function renderGroups(results) {
     (r.images || []).forEach(u => grid.appendChild(makeCard('image', u)));
     (r.videos || []).forEach(u => grid.appendChild(makeCard('video', u)));
     (r.audios || []).forEach(u => grid.appendChild(makeCard('audio', u)));
-    if (r.ytdlp_video) {
-      grid.appendChild(makeCard('ytdlp', r.ytdlp_video.page_url, {title: r.ytdlp_video.title, mode: 'video'}));
-    }
+    (r.ytdlp_videos || []).forEach(v => grid.appendChild(makeCard('ytdlp', v.page_url, {title: v.title, mode: 'video'})));
     group.appendChild(grid);
     container.appendChild(group);
   });
