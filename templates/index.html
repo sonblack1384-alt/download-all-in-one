@@ -129,6 +129,8 @@ function makeCard(kind, url, extra) {
         <button type="button" class="mode-btn active" data-mode="video">Video</button>
         <button type="button" class="mode-btn" data-mode="audio">MP3</button>
       </div>`;
+  } else if (kind === 'douyin') {
+    card.innerHTML = `<div class="icon-tile">🥢</div><span class="badge">Douyin qua trình duyệt</span>`;
   }
 
   card.addEventListener('click', (e) => {
@@ -159,7 +161,7 @@ function renderGroups(results) {
     const titleSuffix = r.title ? ` — ${r.title}` : '';
     let badge = '';
     if (r.source === 'tiktok_no_watermark') badge = '<span class="badge-nowm">✓ Không watermark</span>';
-    else if (r.source === 'douyin_browser') badge = '<span class="badge-nowm" style="background:#5aa0e0">✓ Qua trình duyệt thật</span>';
+    else if (r.source === 'douyin_browser') badge = '<span class="badge-nowm" style="background:#5aa0e0">⏳ Thử qua trình duyệt lúc tải</span>';
     head.innerHTML = `<span class="url" title="${r.url}">${r.url}${titleSuffix}</span>${badge}`;
     group.appendChild(head);
 
@@ -178,6 +180,7 @@ function renderGroups(results) {
     (r.videos || []).forEach(u => grid.appendChild(makeCard('video', u)));
     (r.audios || []).forEach(u => grid.appendChild(makeCard('audio', u)));
     (r.ytdlp_videos || []).forEach(v => grid.appendChild(makeCard('ytdlp', v.page_url, {title: v.title, mode: 'video'})));
+    (r.douyin_items || []).forEach(v => grid.appendChild(makeCard('douyin', v.page_url, {title: v.title})));
     group.appendChild(grid);
     container.appendChild(group);
   });
@@ -204,15 +207,21 @@ function updateCounts() {
 async function downloadSelected() {
   const urls = [];
   const ytdlpItems = [];
+  const douyinItems = [];
   selected.forEach(i => {
     const item = allItems[i];
     if (item.kind === 'ytdlp') {
       ytdlpItems.push({page_url: item.url, title: item.title, mode: item.mode || 'video'});
+    } else if (item.kind === 'douyin') {
+      douyinItems.push({page_url: item.url, title: item.title});
     } else {
       urls.push(item.url);
     }
   });
-  if (urls.length === 0 && ytdlpItems.length === 0) { alert('Chưa chọn file nào.'); return; }
+  if (urls.length === 0 && ytdlpItems.length === 0 && douyinItems.length === 0) { alert('Chưa chọn file nào.'); return; }
+  if (douyinItems.length > 0) {
+    document.getElementById('status').textContent = 'Đang tải Douyin qua trình duyệt thật -- có thể mất 10-30 giây/video, vui lòng đợi...';
+  }
 
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
@@ -220,7 +229,7 @@ async function downloadSelected() {
   try {
     const res = await fetch('/api/download', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls, ytdlp_items: ytdlpItems})
+      body: JSON.stringify({urls, ytdlp_items: ytdlpItems, douyin_items: douyinItems})
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

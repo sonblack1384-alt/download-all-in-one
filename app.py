@@ -12,10 +12,12 @@ Run:
 """
 import re
 import shutil
+import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -47,12 +49,43 @@ PLAYLIST_CAP = 30  # trần an toàn khi dán link playlist/kênh/trang cá nhâ
 # tài khoản của bạn.
 COOKIES_FILE = Path(__file__).resolve().parent / "cookies.txt"
 
+# Nếu KHÔNG có cookies.txt tĩnh, thử tự lấy cookie SỐNG từ trình duyệt (yt-dlp
+# cookiesfrombrowser) cho các site chặn bot nghiêm (Douyin, Instagram). Theo
+# kinh nghiệm thực tế đã kiểm chứng (dự án DichPhimPro, đã tải thành công
+# Douyin/Instagram thật): FIREFOX đáng tin cậy nhất vì Chrome/Edge khoá file
+# cookie khi trình duyệt đang mở ("Could not copy Chrome cookie database")
+# và có thể lỗi giải mã DPAPI trên một số máy Windows. Đổi tên ở đây nếu
+# muốn ưu tiên trình duyệt khác: "chrome" / "edge" / "brave".
+COOKIES_BROWSER = "firefox"
+# Domain thật sự cần cookie -- chỉ bật cookiesfrombrowser (chậm hơn, phải đọc
+# DB trình duyệt) cho các site này, không áp dụng tràn lan cho mọi link.
+COOKIE_REQUIRED_HOSTS = ("douyin.com", "instagram.com")
 
-def ytdlp_base_opts() -> dict:
+
+def needs_browser_cookies(url: str) -> bool:
+    return any(h in urlparse(url).netloc.lower() for h in COOKIE_REQUIRED_HOSTS)
+
+
+def ytdlp_base_opts(url: str = "") -> dict:
     opts = {"quiet": True, "noplaylist": True}
     if COOKIES_FILE.exists():
-        opts["cookiefile"] = str(COOKIES_FILE)
+        opts["cookiefile"] = str(COOKIES_FILE)  # cookies.txt tĩnh luôn được ưu tiên nếu có
+    elif COOKIES_BROWSER and needs_browser_cookies(url):
+        opts["cookiesfrombrowser"] = (COOKIES_BROWSER,)
     return opts
+
+
+def normalize_douyin_url(url: str) -> str:
+    """douyin.com/<bất kỳ>?modal_id=<id> -> douyin.com/video/<id>. Link chia
+    sẻ/link trong trang tìm kiếm Douyin thường ở dạng modal overlay (query
+    param modal_id), nhưng extractor của yt-dlp chỉ nhận dạng link chuẩn
+    /video/<id> -- không đổi thì bị báo "Unsupported URL". Đã kiểm chứng
+    (dự án DichPhimPro, đang chạy thật)."""
+    parsed = urlparse(url)
+    if "douyin.com" not in parsed.netloc.lower() or "/video/" in parsed.path:
+        return url
+    modal_id = parse_qs(parsed.query).get("modal_id", [None])[0]
+    return f"https://www.douyin.com/video/{modal_id}" if modal_id else url
 
 
 class ScanFailed(Exception):
@@ -139,53 +172,83 @@ def tiktok_no_watermark(url: str) -> dict | None:
         return None
 
 
-def douyin_via_browser(url: str) -> dict | None:
-    """Lớp dự phòng CUỐI cho Douyin khi cả tikwm và yt-dlp đều thất bại.
-    Douyin yêu cầu 1 cookie (s_v_web_id) được chính JavaScript chống bot
-    của trang tạo ra tại thời điểm truy cập -- cookie tĩnh xuất từ trình
-    duyệt (cookies.txt) không đủ vì Douyin còn kiểm tra trình duyệt có
-    "giải" đúng bài toán JS đó không (đã xác nhận bằng cách đọc thẳng mã
-    nguồn yt-dlp: extractor/tiktok.py, class DouyinIE). Cách duy nhất đáng
-    tin cậy là dùng 1 trình duyệt thật (Playwright + Chromium headless) để
-    tự giải bài toán đó như người dùng thật, rồi đọc link video từ thẻ
-    <video> sau khi trang tải xong.
+def _douyin_probe_via_browser(url: str) -> dict:
+    """Mở trang Douyin bằng trình duyệt thật (Playwright + Chromium headless)
+    để JS của trang tự giải bài toán chống bot như người dùng thật, rồi bắt
+    link CDN video/audio. Douyin phát video+audio thành 2 luồng TÁCH RIÊNG
+    (không như TikTok gộp chung) -- phải bắt cả 2 qua network response rồi
+    ghép bằng ffmpeg sau, không chỉ đọc src của thẻ <video> (thường chỉ có
+    hình, không tiếng). Raise lỗi (không nuốt exception) để hàm gọi retry
+    được -- xử lý graceful-fail ở tầng gọi, không phải ở đây.
 
-    CHƯA kiểm chứng được với Douyin thật (môi trường phát triển công cụ
-    này bị chặn mạng tới douyin.com) -- chỉ xác nhận cơ chế Playwright
-    (goto/wait_for_selector/eval_on_selector) hoạt động đúng trên trang
-    khác. Cần người dùng tự thử trên máy thật và báo lại nếu còn lỗi.
+    Root cause (đã xác nhận bằng cách đọc mã nguồn yt-dlp extractor/tiktok.py
+    class DouyinIE): Douyin cần cookie s_v_web_id do JS chống bot của trang
+    tạo ra tại thời điểm truy cập -- cookie tĩnh không đủ, cookiesfrombrowser
+    cũng có thể không đủ nếu Douyin đòi thêm bước giải mã JS runtime. Trình
+    duyệt thật là cách duy nhất chắc chắn "giải" được bài toán đó.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return None
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(user_agent=HEADERS["User-Agent"])
-                page.goto(url, wait_until="networkidle", timeout=25000)
-                page.wait_for_selector("video", timeout=15000)
-                video_src = page.eval_on_selector("video", "el => el.currentSrc || el.src")
-                title = page.title()
-            finally:
-                browser.close()
-            if video_src:
-                return {"video": video_src, "title": title or "douyin"}
-    except Exception:
-        return None
-    return None
+    from playwright.sync_api import sync_playwright
+
+    video_url = None
+    audio_url = None
+
+    def on_response(response):
+        nonlocal video_url, audio_url
+        try:
+            ctype = response.headers.get("content-type", "")
+        except Exception:  # noqa: BLE001 -- response có thể đã đóng, bỏ qua
+            return
+        if "video" in ctype and not video_url:
+            video_url = response.url
+        elif "audio" in ctype and not audio_url:
+            audio_url = response.url
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page.on("response", on_response)
+            page.goto(url, wait_until="networkidle", timeout=25000)
+            page.wait_for_selector("video", timeout=15000)
+            if not video_url:
+                video_url = page.eval_on_selector("video", "el => el.currentSrc || el.src")
+            title = page.title() or "douyin"
+        finally:
+            browser.close()
+
+    if not video_url:
+        raise RuntimeError("Không lấy được link video Douyin qua trình duyệt thật")
+    return {"video": video_url, "audio": audio_url, "title": title}
+
+
+def _with_retries(fn, attempts: int = 3, base_delay: float = 3.0):
+    """Thử lại tối đa `attempts` lần, mỗi lần chờ lâu hơn (3s, 6s, 9s...) --
+    Douyin có thể tạm chặn/chậm khi vừa quét, theo kinh nghiệm thực tế đã
+    kiểm chứng (dự án DichPhimPro)."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            if i < attempts - 1:
+                time.sleep(base_delay * (i + 1))
+    raise last_exc
 
 
 def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
-    """Trả về {images, videos, audios, ytdlp_videos, source, title}.
+    """Trả về {images, videos, audios, ytdlp_videos, douyin_items, source, title}.
     - images/videos/audios: link tải trực tiếp (GET thẳng là ra file).
     - ytdlp_videos: list [{page_url, title}, ...] -- 1 phần tử cho 1 video
       đơn, NHIỀU phần tử nếu link là playlist/kênh và allow_playlist=True
       (yt-dlp tự liệt kê, giới hạn PLAYLIST_CAP video để tránh quá tải).
+    - douyin_items: list [{page_url, title}, ...] -- Douyin cần mở trình
+      duyệt thật để lấy video, CHỈ làm việc đó lúc TẢI thật (không phải lúc
+      quét) để tránh mở trình duyệt 2 lần (quét xong rồi tải lại mở lần nữa).
     - source: "tiktok_no_watermark" | "html" | "ytdlp" -- để giao diện báo
       rõ đã dùng cách nào (đặc biệt để xác nhận đã tải được bản không logo).
     """
+    page_url = normalize_douyin_url(page_url)
     found: dict[str, str] = {}  # url -> "image" | "video" | "audio"
 
     def add(raw_url: str | None, kind: str):
@@ -208,7 +271,7 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
                         add(v["video"], "video")
                     return {
                         "images": [], "videos": sorted(u for u, k in found.items() if k == "video"),
-                        "audios": [], "ytdlp_videos": [],
+                        "audios": [], "ytdlp_videos": [], "douyin_items": [],
                         "source": "tiktok_no_watermark",
                         "title": f"@{username} ({len(profile_videos)} video)",
                     }
@@ -225,26 +288,23 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
                 "images": sorted(u for u, k in found.items() if k == "image"),
                 "videos": sorted(u for u, k in found.items() if k == "video"),
                 "audios": sorted(u for u, k in found.items() if k == "audio"),
-                "ytdlp_videos": [],
+                "ytdlp_videos": [], "douyin_items": [],
                 "source": "tiktok_no_watermark",
                 "title": tk["title"],
             }
-        # tikwm lỗi/hết hạn: nếu là Douyin, thử trình duyệt thật trước khi
-        # rơi xuống yt-dlp (yt-dlp gần như chắc chắn cũng lỗi "Fresh
-        # cookies" với Douyin single-video do cùng 1 nguyên nhân gốc).
+        # tikwm lỗi/hết hạn: nếu là Douyin, để lại cho lớp trình duyệt thật
+        # xử lý LÚC TẢI (không mở trình duyệt ở bước quét -- chậm và không
+        # cần thiết nếu cuối cùng người dùng không chọn tải item này).
         if "douyin.com" in urlparse(page_url).netloc.lower():
-            dv = douyin_via_browser(page_url)
-            if dv:
-                add(dv["video"], "video")
-                return {
-                    "images": [], "videos": sorted(u for u, k in found.items() if k == "video"),
-                    "audios": [], "ytdlp_videos": [],
-                    "source": "douyin_browser",
-                    "title": dv["title"],
-                }
-        # Mọi cách đều thất bại -> rơi xuống nhánh thường bên dưới (parse
-        # HTML + yt-dlp), gần như chắc chắn cũng không ra gì với Douyin
-        # nhưng vẫn thử cho các link TikTok edge-case khác.
+            return {
+                "images": [], "videos": [], "audios": [],
+                "ytdlp_videos": [],
+                "douyin_items": [{"page_url": page_url, "title": "Douyin (qua trình duyệt thật)"}],
+                "source": "douyin_browser",
+                "title": None,
+            }
+        # Không phải Douyin (TikTok edge-case khác) -> rơi xuống nhánh
+        # thường bên dưới (parse HTML + yt-dlp).
 
     # Bước 1: thử tải HTML thô. Nhiều trang (Facebook, Instagram...) chặn
     # kiểu request này hoặc cần JavaScript mới render ra nội dung -- KHÔNG
@@ -303,7 +363,7 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
     try:
         import yt_dlp
 
-        opts = {**ytdlp_base_opts(), "skip_download": True, "noplaylist": not allow_playlist}
+        opts = {**ytdlp_base_opts(page_url), "skip_download": True, "noplaylist": not allow_playlist}
         if allow_playlist:
             opts["playlistend"] = PLAYLIST_CAP
             opts["extract_flat"] = "in_playlist"  # chỉ liệt kê, không phân tích từng video -- nhanh hơn nhiều
@@ -331,7 +391,8 @@ def scan_page(page_url: str, allow_playlist: bool = False) -> dict:
 
     return {
         "images": images, "videos": videos, "audios": audios,
-        "ytdlp_videos": ytdlp_videos, "source": "ytdlp" if ytdlp_videos else "html",
+        "ytdlp_videos": ytdlp_videos, "douyin_items": [],
+        "source": "ytdlp" if ytdlp_videos else "html",
         "title": f"{len(ytdlp_videos)} video" if len(ytdlp_videos) > 1 else None,
     }
 
@@ -370,7 +431,8 @@ def api_download():
     data = request.json or {}
     urls: list[str] = data.get("urls", [])
     ytdlp_items: list[dict] = data.get("ytdlp_items", [])  # [{page_url, title, mode}]
-    total = len(urls) + len(ytdlp_items)
+    douyin_items: list[dict] = data.get("douyin_items", [])  # [{page_url, title}]
+    total = len(urls) + len(ytdlp_items) + len(douyin_items)
     if total == 0:
         return jsonify({"error": "Chưa chọn file nào để tải."}), 400
     if total > MAX_ITEMS_PER_DOWNLOAD:
@@ -392,6 +454,12 @@ def api_download():
             except Exception as e:  # noqa: BLE001
                 (tmp_dir / f"LOI_video_{j:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
 
+        for k, item in enumerate(douyin_items):
+            try:
+                _with_retries(lambda u=item["page_url"]: _download_douyin_via_browser(u, tmp_dir))
+            except Exception as e:  # noqa: BLE001
+                (tmp_dir / f"LOI_douyin_{k:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
+
         if not any(tmp_dir.iterdir()):
             return jsonify({"error": "Tải thất bại hết, không có file nào."}), 500
 
@@ -400,6 +468,14 @@ def api_download():
         return send_file(zip_path, as_attachment=True, download_name="media.zip")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _stream_download(url: str, out_path: Path):
+    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True)
+    resp.raise_for_status()
+    with open(out_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            f.write(chunk)
 
 
 def _download_one(url: str, tmp_dir: Path, index: int):
@@ -421,7 +497,7 @@ def _download_one(url: str, tmp_dir: Path, index: int):
 def _download_with_ytdlp(page_url: str, tmp_dir: Path, audio_only: bool = False):
     import yt_dlp
 
-    opts = {**ytdlp_base_opts(), "outtmpl": str(tmp_dir / "%(title).80s.%(ext)s")}
+    opts = {**ytdlp_base_opts(page_url), "outtmpl": str(tmp_dir / "%(title).80s.%(ext)s")}
     if audio_only:
         # Cần có ffmpeg trong PATH của máy -- nếu thiếu, yt-dlp báo lỗi rõ
         # ràng, được ghi vào file LOI_*.txt trong ZIP kết quả thay vì crash.
@@ -431,6 +507,31 @@ def _download_with_ytdlp(page_url: str, tmp_dir: Path, audio_only: bool = False)
         opts["format"] = "best"
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([page_url])
+
+
+def _download_douyin_via_browser(page_url: str, tmp_dir: Path):
+    """Tải Douyin qua trình duyệt thật: mở trang, bắt link CDN video + audio
+    (2 luồng tách riêng), tải từng cái rồi ghép bằng ffmpeg. Gọi hàm này qua
+    `_with_retries()` ở nơi gọi -- không tự retry bên trong, để tầng gọi
+    quyết định số lần thử."""
+    result = _douyin_probe_via_browser(page_url)
+    title = re.sub(r"[^\w\-. ]", "_", result["title"])[:80] or "douyin"
+
+    video_path = tmp_dir / f"{title}_video.mp4"
+    _stream_download(result["video"], video_path)
+
+    if result["audio"] and result["audio"] != result["video"]:
+        audio_path = tmp_dir / f"{title}_audio.m4a"
+        _stream_download(result["audio"], audio_path)
+        out_path = tmp_dir / f"{title}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path), "-c", "copy", str(out_path)],
+            check=True, capture_output=True,
+        )
+        video_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
+    else:
+        video_path.rename(tmp_dir / f"{title}.mp4")
 
 
 if __name__ == "__main__":
