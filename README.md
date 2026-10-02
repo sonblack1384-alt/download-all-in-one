@@ -9,6 +9,7 @@ Dán 1 hoặc nhiều link, quét toàn bộ ảnh/video/audio, chọn và tải
 - Video khác (YouTube, Twitter/X, Vimeo...): chọn tải nguyên video hoặc chỉ tách lấy âm thanh MP3.
 - Giao diện báo rõ khi nào đã lấy được bản không watermark (nhãn xanh).
 - Hỗ trợ cookie đăng nhập (`cookies.txt`) cho site chặn bot mạnh.
+- **Bảng nhật ký tiến trình khi tải** (từng bước, lỗi báo rõ ở dòng nào) + nút **Huỷ** giữa chừng + nút **Thử lại** khi lỗi/huỷ — không còn tình trạng bấm "Tải ZIP" rồi không biết đang chạy hay đã treo.
 
 ## Chạy
 
@@ -41,7 +42,7 @@ Muốn tắt: mở Task Manager → tìm tiến trình `pythonw.exe` → End Tas
 1. **Link TikTok** → gọi API công khai `tikwm.com` lấy thẳng link video gốc KHÔNG watermark (+ bản HD, + nhạc nền nếu có) — tải trực tiếp, không cần xử lý gì thêm.
 2. **Các link khác** → quét HTML của trang (`<img>`, `<video>`, `<audio>`, `<source>`, link trực tiếp tới file ảnh/video/audio) để tìm media.
 3. Nếu trang là 1 video đơn mà bước 2 không bắt được (YouTube, Twitter/X, Vimeo, Facebook công khai...), thử thêm bằng `yt-dlp`. Có thể chọn tải nguyên video hoặc chỉ tách âm thanh MP3 (cần cài `ffmpeg`, xem bên dưới).
-4. Chọn file muốn tải trên giao diện, bấm "Tải ZIP" — server tải từng file về rồi nén lại gửi về trình duyệt.
+4. Chọn file muốn tải trên giao diện, bấm "Tải ZIP" — server tải NGẦM (không chặn giao diện), có **bảng "Nhật ký tiến trình"** hiện trực tiếp từng bước (`[1/5] Tải trực tiếp: ...`, `-> Xong.` / `-> Lỗi: ...`) để biết đang tải tới đâu hoặc lỗi ở bước nào. Có nút **Huỷ** (dừng giữa chừng) và nút **Thử lại** (chạy lại đúng các file đã chọn) khi lỗi/huỷ. Xong thì tự tải file ZIP về máy.
 
 ## Cài thêm `ffmpeg` nếu muốn dùng tính năng tách MP3
 

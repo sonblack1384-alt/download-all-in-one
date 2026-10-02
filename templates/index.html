@@ -36,6 +36,21 @@
   #downloadBar { position:sticky; bottom:0; background:var(--bg); padding:14px 0; margin-top:16px; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
   a.hidden-link { display:none; }
   .empty { color:var(--muted); font-size:13px; padding:10px 0; }
+  .log-panel { margin-top:16px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--card); }
+  .log-head { padding:10px 14px; background:#191d25; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .log-head .title { font-size:13px; font-weight:600; }
+  .log-head .job-status { font-size:12px; color:var(--muted); }
+  .log-head .job-status.running::before { content:"⏳ "; }
+  .log-head .job-status.done::before { content:"✅ "; }
+  .log-head .job-status.error::before { content:"❌ "; }
+  .log-head .job-status.cancelled::before { content:"⛔ "; }
+  .log-actions { display:flex; gap:8px; }
+  .log-actions button { padding:6px 12px; font-size:12px; }
+  .log-list { max-height:240px; overflow-y:auto; padding:10px 14px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.55; }
+  .log-line { white-space:pre-wrap; word-break:break-all; color:var(--text); }
+  .log-line.err { color:#e8785d; }
+  .log-line.ok { color:var(--green); }
+  .log-line .n { color:var(--muted); margin-right:6px; }
 </style>
 </head>
 <body>
@@ -65,6 +80,18 @@
   <div id="downloadBar" style="display:none">
     <span id="selectedLabel" style="color:var(--muted);font-size:14px"></span>
     <button id="downloadBtn" onclick="downloadSelected()">Tải ZIP</button>
+  </div>
+
+  <div id="logPanel" class="log-panel" style="display:none">
+    <div class="log-head">
+      <span class="title">Nhật ký tiến trình</span>
+      <span id="jobStatus" class="job-status"></span>
+      <div class="log-actions">
+        <button id="cancelBtn" class="secondary" style="display:none" onclick="cancelJob()">Huỷ</button>
+        <button id="retryBtn" class="secondary" style="display:none" onclick="retryJob()">Thử lại</button>
+      </div>
+    </div>
+    <div id="logList" class="log-list"></div>
   </div>
 </div>
 
@@ -206,7 +233,129 @@ function updateCounts() {
   document.getElementById('selectedLabel').textContent = `Đã chọn ${selected.size} file`;
 }
 
-async function downloadSelected() {
+let currentJobId = null;
+let pollTimer = null;
+let lastPayload = null;
+let shownLogCount = 0;
+
+function setJobStatusLabel(status) {
+  const el = document.getElementById('jobStatus');
+  el.className = 'job-status ' + status;
+  const labels = {running: 'Đang chạy...', done: 'Hoàn tất', error: 'Lỗi', cancelled: 'Đã huỷ'};
+  el.textContent = labels[status] || status;
+}
+
+function appendLogLines(logs) {
+  const list = document.getElementById('logList');
+  for (let i = shownLogCount; i < logs.length; i++) {
+    const row = document.createElement('div');
+    const line = logs[i];
+    const isErr = /lỗi|error|thất bại/i.test(line);
+    const isOk = /xong|hoàn tất|hoàn thành/i.test(line) && !isErr;
+    row.className = 'log-line' + (isErr ? ' err' : isOk ? ' ok' : '');
+    row.innerHTML = `<span class="n">${String(i + 1).padStart(2, '0')}</span>${line.replace(/</g, '&lt;')}`;
+    list.appendChild(row);
+  }
+  shownLogCount = logs.length;
+  list.scrollTop = list.scrollHeight;
+}
+
+async function startDownloadJob(urls, ytdlpItems, douyinItems) {
+  lastPayload = {urls, ytdlp_items: ytdlpItems, douyin_items: douyinItems};
+  shownLogCount = 0;
+  document.getElementById('logList').innerHTML = '';
+  document.getElementById('logPanel').style.display = 'block';
+  document.getElementById('cancelBtn').style.display = 'inline-block';
+  document.getElementById('retryBtn').style.display = 'none';
+  setJobStatusLabel('running');
+
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Đang tải...';
+
+  try {
+    const res = await fetch('/api/download/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(lastPayload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      appendLogLines([data.error || 'Không tạo được tiến trình tải.']);
+      setJobStatusLabel('error');
+      document.getElementById('cancelBtn').style.display = 'none';
+      document.getElementById('retryBtn').style.display = 'inline-block';
+      btn.disabled = false;
+      btn.textContent = 'Tải ZIP';
+      return;
+    }
+    currentJobId = data.job_id;
+    pollTimer = setInterval(() => pollJobStatus(currentJobId), 1000);
+  } catch (e) {
+    appendLogLines(['Lỗi kết nối: ' + e]);
+    setJobStatusLabel('error');
+    document.getElementById('cancelBtn').style.display = 'none';
+    document.getElementById('retryBtn').style.display = 'inline-block';
+    btn.disabled = false;
+    btn.textContent = 'Tải ZIP';
+  }
+}
+
+async function pollJobStatus(jobId) {
+  const btn = document.getElementById('downloadBtn');
+  try {
+    const res = await fetch(`/api/download/status/${jobId}`);
+    if (!res.ok) {
+      clearInterval(pollTimer);
+      appendLogLines(['Không tìm thấy tiến trình (có thể server đã khởi động lại).']);
+      setJobStatusLabel('error');
+      document.getElementById('cancelBtn').style.display = 'none';
+      document.getElementById('retryBtn').style.display = 'inline-block';
+      btn.disabled = false;
+      btn.textContent = 'Tải ZIP';
+      return;
+    }
+    const data = await res.json();
+    appendLogLines(data.logs || []);
+
+    if (data.status === 'running') return;
+
+    clearInterval(pollTimer);
+    setJobStatusLabel(data.status);
+    document.getElementById('cancelBtn').style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Tải ZIP';
+
+    if (data.status === 'done') {
+      window.location.href = `/api/download/result/${jobId}`;
+    } else {
+      document.getElementById('retryBtn').style.display = 'inline-block';
+    }
+  } catch (e) {
+    clearInterval(pollTimer);
+    appendLogLines(['Lỗi khi kiểm tra tiến trình: ' + e]);
+    setJobStatusLabel('error');
+    document.getElementById('cancelBtn').style.display = 'none';
+    document.getElementById('retryBtn').style.display = 'inline-block';
+    btn.disabled = false;
+    btn.textContent = 'Tải ZIP';
+  }
+}
+
+async function cancelJob() {
+  if (!currentJobId) return;
+  document.getElementById('cancelBtn').disabled = true;
+  try {
+    await fetch(`/api/download/cancel/${currentJobId}`, {method: 'POST'});
+  } catch (e) { /* vẫn chờ poll tiếp theo cập nhật trạng thái */ }
+  document.getElementById('cancelBtn').disabled = false;
+}
+
+function retryJob() {
+  if (!lastPayload) return;
+  startDownloadJob(lastPayload.urls, lastPayload.ytdlp_items, lastPayload.douyin_items);
+}
+
+function downloadSelected() {
   const urls = [];
   const ytdlpItems = [];
   const douyinItems = [];
@@ -222,36 +371,9 @@ async function downloadSelected() {
   });
   if (urls.length === 0 && ytdlpItems.length === 0 && douyinItems.length === 0) { alert('Chưa chọn file nào.'); return; }
   if (douyinItems.length > 0) {
-    document.getElementById('status').textContent = 'Đang tải Douyin qua trình duyệt thật -- có thể mất 10-30 giây/video, vui lòng đợi...';
+    document.getElementById('status').textContent = 'Đang tải Douyin qua trình duyệt thật -- xem chi tiết từng bước ở bảng Nhật ký tiến trình bên dưới.';
   }
-
-  const btn = document.getElementById('downloadBtn');
-  btn.disabled = true;
-  btn.textContent = 'Đang tải...';
-  try {
-    const res = await fetch('/api/download', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls, ytdlp_items: ytdlpItems, douyin_items: douyinItems})
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Tải thất bại.');
-      return;
-    }
-    const blob = await res.blob();
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'media.zip';
-    link.className = 'hidden-link';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } catch (e) {
-    alert('Lỗi: ' + e);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Tải ZIP';
-  }
+  startDownloadJob(urls, ytdlpItems, douyinItems);
 }
 
 document.getElementById('urlInput').addEventListener('keydown', e => {

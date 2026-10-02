@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +25,37 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, send_file, render_template
 
 app = Flask(__name__)
+
+# Hàng đợi tải chạy NỀN (threading.Thread) để giao diện có thể: (1) hiện log
+# tiến trình theo thời gian thực (poll /api/download/status/<job_id>), (2) có
+# nút Huỷ giữa chừng, (3) có nút Thử lại khi lỗi -- vì lớp Douyin qua trình
+# duyệt thật có thể mất tới ~2 phút (3 lần thử), request đồng bộ cũ khiến
+# giao diện trông như treo không biết đang chạy hay đã chết.
+JOBS: dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
+
+
+class CancelledError(Exception):
+    pass
+
+
+def new_job() -> str:
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {"status": "running", "logs": [], "zip_path": None, "error": None, "cancel": False}
+    return job_id
+
+
+def job_log(job_id: str, msg: str):
+    print(msg, flush=True)
+    with JOBS_LOCK:
+        if job_id in JOBS:
+            JOBS[job_id]["logs"].append(msg)
+
+
+def job_is_cancelled(job_id: str) -> bool:
+    with JOBS_LOCK:
+        return JOBS.get(job_id, {}).get("cancel", False)
 
 HEADERS = {
     "User-Agent": (
@@ -187,7 +219,7 @@ def tiktok_no_watermark(url: str) -> dict | None:
         return None
 
 
-def _douyin_probe_via_browser(url: str) -> dict:
+def _douyin_probe_via_browser(url: str, log=print) -> dict:
     """Mở trang Douyin bằng trình duyệt thật (Playwright + Chromium headless)
     để JS của trang tự giải bài toán chống bot như người dùng thật, rồi bắt
     link CDN video/audio. Douyin phát video+audio thành 2 luồng TÁCH RIÊNG
@@ -218,15 +250,15 @@ def _douyin_probe_via_browser(url: str) -> dict:
         elif "audio" in ctype and not audio_url:
             audio_url = response.url
 
-    print(f"[douyin] Đang mở trình duyệt thật -> {url}", flush=True)
+    log(f"[douyin] Đang mở trình duyệt thật -> {url}")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page(user_agent=HEADERS["User-Agent"])
             page.on("response", on_response)
-            print("[douyin] Đang tải trang (tối đa 25s)...", flush=True)
+            log("[douyin] Đang tải trang (tối đa 25s)...")
             page.goto(url, wait_until="networkidle", timeout=25000)
-            print("[douyin] Trang đã tải, đang tìm thẻ <video> (tối đa 15s)...", flush=True)
+            log("[douyin] Trang đã tải, đang tìm thẻ <video> (tối đa 15s)...")
             page.wait_for_selector("video", timeout=15000)
             if not video_url:
                 video_url = page.eval_on_selector("video", "el => el.currentSrc || el.src")
@@ -236,26 +268,36 @@ def _douyin_probe_via_browser(url: str) -> dict:
 
     if not video_url:
         raise RuntimeError("Không lấy được link video Douyin qua trình duyệt thật")
-    print(f"[douyin] Lấy link thành công: video={'co' if video_url else 'khong'}, audio={'co' if audio_url else 'khong'}", flush=True)
+    log(f"[douyin] Lấy link thành công: video={'co' if video_url else 'khong'}, audio={'co' if audio_url else 'khong'}")
     return {"video": video_url, "audio": audio_url, "title": title}
 
 
-def _with_retries(fn, attempts: int = 3, base_delay: float = 3.0):
+def _with_retries(fn, attempts: int = 3, base_delay: float = 3.0, log=print, should_cancel=None):
     """Thử lại tối đa `attempts` lần, mỗi lần chờ lâu hơn (3s, 6s, 9s...) --
     Douyin có thể tạm chặn/chậm khi vừa quét, theo kinh nghiệm thực tế đã
-    kiểm chứng (dự án DichPhimPro)."""
+    kiểm chứng (dự án DichPhimPro). `should_cancel`: callable kiểm tra giữa
+    các lần thử/khi đang chờ -- raise CancelledError ngay nếu người dùng
+    bấm Huỷ, không đợi hết thời gian chờ."""
     last_exc = None
     for i in range(attempts):
-        print(f"[douyin] Lần thử {i + 1}/{attempts}...", flush=True)
+        if should_cancel and should_cancel():
+            raise CancelledError("Đã huỷ theo yêu cầu")
+        log(f"[douyin] Lần thử {i + 1}/{attempts}...")
         try:
             return fn()
         except Exception as e:  # noqa: BLE001
             last_exc = e
-            print(f"[douyin] Lần {i + 1} lỗi: {e}", flush=True)
+            log(f"[douyin] Lần {i + 1} lỗi: {e}")
             if i < attempts - 1:
                 wait_s = base_delay * (i + 1)
-                print(f"[douyin] Chờ {wait_s:.0f}s rồi thử lại...", flush=True)
-                time.sleep(wait_s)
+                log(f"[douyin] Chờ {wait_s:.0f}s rồi thử lại...")
+                slept = 0.0
+                while slept < wait_s:
+                    if should_cancel and should_cancel():
+                        raise CancelledError("Đã huỷ theo yêu cầu")
+                    step = min(0.5, wait_s - slept)
+                    time.sleep(step)
+                    slept += step
     raise last_exc
 
 
@@ -452,8 +494,10 @@ def api_scan_batch():
     return jsonify({"results": results})
 
 
-@app.route("/api/download", methods=["POST"])
-def api_download():
+@app.route("/api/download/start", methods=["POST"])
+def api_download_start():
+    """Bắt đầu 1 job tải NỀN, trả về job_id ngay (không đợi tải xong) --
+    giao diện poll /api/download/status/<job_id> để xem log + trạng thái."""
     data = request.json or {}
     urls: list[str] = data.get("urls", [])
     ytdlp_items: list[dict] = data.get("ytdlp_items", [])  # [{page_url, title, mode}]
@@ -464,34 +508,141 @@ def api_download():
     if total > MAX_ITEMS_PER_DOWNLOAD:
         return jsonify({"error": f"Tối đa {MAX_ITEMS_PER_DOWNLOAD} file mỗi lần tải -- chọn ít lại."}), 400
 
-    job_id = uuid.uuid4().hex
+    job_id = new_job()
+    thread = threading.Thread(target=_run_download_job, args=(job_id, urls, ytdlp_items, douyin_items), daemon=True)
+    thread.start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/download/status/<job_id>")
+def api_download_status(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "Không tìm thấy job (có thể đã tải xong và dọn dẹp)."}), 404
+        return jsonify({"status": job["status"], "logs": job["logs"], "error": job["error"]})
+
+
+@app.route("/api/download/cancel/<job_id>", methods=["POST"])
+def api_download_cancel(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "Không tìm thấy job."}), 404
+        job["cancel"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/download/result/<job_id>")
+def api_download_result(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job or job["status"] != "done" or not job["zip_path"]:
+            return jsonify({"error": "Job chưa xong hoặc không tồn tại."}), 404
+        zip_path = job["zip_path"]
+
+    resp = send_file(zip_path, as_attachment=True, download_name="media.zip")
+
+    @resp.call_on_close
+    def _cleanup():
+        Path(zip_path).unlink(missing_ok=True)
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+
+    return resp
+
+
+def _run_download_job(job_id: str, urls: list[str], ytdlp_items: list[dict], douyin_items: list[dict]):
+    """Chạy trong thread nền. Ghi log + trạng thái vào JOBS[job_id] để
+    /api/download/status poll được, kiểm tra cancel giữa mỗi item để nút
+    Huỷ có tác dụng ngay (không cần đợi hết hàng đợi)."""
+    def log(msg: str):
+        job_log(job_id, msg)
+
+    def cancelled() -> bool:
+        return job_is_cancelled(job_id)
+
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"bmd_{job_id}_"))
+    total = len(urls) + len(ytdlp_items) + len(douyin_items)
+    done = 0
+    was_cancelled = False
 
     try:
         for i, url in enumerate(urls):
+            if cancelled():
+                was_cancelled = True
+                break
+            done += 1
+            log(f"[{done}/{total}] Tải trực tiếp: {url[:80]}")
             try:
                 _download_one(url, tmp_dir, i)
+                log("  -> Xong.")
             except Exception as e:  # noqa: BLE001 - 1 file lỗi không chặn các file khác
+                log(f"  -> Lỗi: {e}")
                 (tmp_dir / f"LOI_{i:03d}.txt").write_text(f"{url}\n{e}", encoding="utf-8")
 
-        for j, item in enumerate(ytdlp_items):
-            try:
-                _download_with_ytdlp(item["page_url"], tmp_dir, audio_only=(item.get("mode") == "audio"))
-            except Exception as e:  # noqa: BLE001
-                (tmp_dir / f"LOI_video_{j:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
+        if not was_cancelled:
+            for j, item in enumerate(ytdlp_items):
+                if cancelled():
+                    was_cancelled = True
+                    break
+                done += 1
+                log(f"[{done}/{total}] Tải video (yt-dlp): {item['page_url'][:80]}")
+                try:
+                    _download_with_ytdlp(item["page_url"], tmp_dir, audio_only=(item.get("mode") == "audio"))
+                    log("  -> Xong.")
+                except Exception as e:  # noqa: BLE001
+                    log(f"  -> Lỗi: {e}")
+                    (tmp_dir / f"LOI_video_{j:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
 
-        for k, item in enumerate(douyin_items):
-            try:
-                _with_retries(lambda u=item["page_url"]: _download_douyin_via_browser(u, tmp_dir))
-            except Exception as e:  # noqa: BLE001
-                (tmp_dir / f"LOI_douyin_{k:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
+        if not was_cancelled:
+            for k, item in enumerate(douyin_items):
+                if cancelled():
+                    was_cancelled = True
+                    break
+                done += 1
+                log(f"[{done}/{total}] Tải Douyin qua trình duyệt thật: {item['page_url'][:80]}")
+                try:
+                    _with_retries(
+                        lambda u=item["page_url"]: _download_douyin_via_browser(u, tmp_dir, log=log),
+                        log=log, should_cancel=cancelled,
+                    )
+                    log("  -> Xong.")
+                except CancelledError:
+                    was_cancelled = True
+                    break
+                except Exception as e:  # noqa: BLE001
+                    log(f"  -> Lỗi: {e}")
+                    (tmp_dir / f"LOI_douyin_{k:03d}.txt").write_text(f"{item['page_url']}\n{e}", encoding="utf-8")
+
+        if was_cancelled:
+            log("Đã huỷ theo yêu cầu.")
+            with JOBS_LOCK:
+                if job_id in JOBS:
+                    JOBS[job_id]["status"] = "cancelled"
+            return
 
         if not any(tmp_dir.iterdir()):
-            return jsonify({"error": "Tải thất bại hết, không có file nào."}), 500
+            log("Tải thất bại hết, không có file nào.")
+            with JOBS_LOCK:
+                if job_id in JOBS:
+                    JOBS[job_id]["status"] = "error"
+                    JOBS[job_id]["error"] = "Tải thất bại hết, không có file nào."
+            return
 
         zip_base = tmp_dir.parent / f"bmd_{job_id}"
         zip_path = shutil.make_archive(str(zip_base), "zip", root_dir=tmp_dir)
-        return send_file(zip_path, as_attachment=True, download_name="media.zip")
+        log("Hoàn tất! Bấm \"Tải ZIP\" để lưu file về máy.")
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                JOBS[job_id]["status"] = "done"
+                JOBS[job_id]["zip_path"] = zip_path
+    except Exception as e:  # noqa: BLE001 -- lỗi không lường trước, không để thread chết âm thầm
+        log(f"Lỗi không mong đợi: {e}")
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                JOBS[job_id]["status"] = "error"
+                JOBS[job_id]["error"] = str(e)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -535,23 +686,23 @@ def _download_with_ytdlp(page_url: str, tmp_dir: Path, audio_only: bool = False)
         ydl.download([page_url])
 
 
-def _download_douyin_via_browser(page_url: str, tmp_dir: Path):
+def _download_douyin_via_browser(page_url: str, tmp_dir: Path, log=print):
     """Tải Douyin qua trình duyệt thật: mở trang, bắt link CDN video + audio
     (2 luồng tách riêng), tải từng cái rồi ghép bằng ffmpeg. Gọi hàm này qua
     `_with_retries()` ở nơi gọi -- không tự retry bên trong, để tầng gọi
     quyết định số lần thử."""
-    result = _douyin_probe_via_browser(page_url)
+    result = _douyin_probe_via_browser(page_url, log=log)
     title = re.sub(r"[^\w\-. ]", "_", result["title"])[:80] or "douyin"
 
-    print(f"[douyin] Đang tải video: {result['video'][:80]}...", flush=True)
+    log(f"[douyin] Đang tải video: {result['video'][:80]}...")
     video_path = tmp_dir / f"{title}_video.mp4"
     _stream_download(result["video"], video_path)
 
     if result["audio"] and result["audio"] != result["video"]:
-        print(f"[douyin] Đang tải audio riêng: {result['audio'][:80]}...", flush=True)
+        log(f"[douyin] Đang tải audio riêng: {result['audio'][:80]}...")
         audio_path = tmp_dir / f"{title}_audio.m4a"
         _stream_download(result["audio"], audio_path)
-        print("[douyin] Đang ghép video+audio bằng ffmpeg...", flush=True)
+        log("[douyin] Đang ghép video+audio bằng ffmpeg...")
         out_path = tmp_dir / f"{title}.mp4"
         try:
             subprocess.run(
@@ -566,8 +717,8 @@ def _download_douyin_via_browser(page_url: str, tmp_dir: Path):
         audio_path.unlink(missing_ok=True)
     else:
         video_path.rename(tmp_dir / f"{title}.mp4")
-    print(f"[douyin] Xong: {title}.mp4", flush=True)
+    log(f"[douyin] Xong: {title}.mp4")
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
