@@ -5,39 +5,47 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bulk Media Downloader</title>
 <style>
-  :root { --bg:#14171c; --card:#1c212b; --accent:#e8a33d; --text:#edeff2; --muted:#8a93a1; --border:#2a3140; }
+  :root { --bg:#14171c; --card:#1c212b; --accent:#e8a33d; --text:#edeff2; --muted:#8a93a1; --border:#2a3140; --green:#4caf6b; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,Segoe UI,Roboto,sans-serif; }
-  .wrap { max-width:960px; margin:0 auto; padding:32px 16px 80px; }
+  .wrap { max-width:1000px; margin:0 auto; padding:32px 16px 80px; }
   h1 { font-size:22px; margin:0 0 4px; }
-  p.sub { color:var(--muted); margin:0 0 24px; font-size:14px; }
-  .scan-row { display:flex; gap:8px; }
-  input[type=url] { flex:1; padding:12px 14px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); font-size:15px; }
-  button { padding:12px 20px; border-radius:8px; border:none; background:var(--accent); color:#14171c; font-weight:600; font-size:15px; cursor:pointer; }
+  p.sub { color:var(--muted); margin:0 0 20px; font-size:14px; }
+  textarea { width:100%; min-height:90px; padding:12px 14px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); font-size:14px; font-family:inherit; resize:vertical; }
+  .scan-row { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+  button { padding:11px 20px; border-radius:8px; border:none; background:var(--accent); color:#14171c; font-weight:600; font-size:14px; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   button.secondary { background:transparent; border:1px solid var(--border); color:var(--text); }
-  #status { margin:16px 0; color:var(--muted); font-size:14px; min-height:20px; }
-  .toolbar { display:flex; justify-content:space-between; align-items:center; margin:20px 0 10px; }
-  .toolbar .left { display:flex; gap:10px; align-items:center; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:10px; }
+  button.mode-btn { padding:3px 8px; font-size:11px; font-weight:500; border-radius:5px; background:#2a3140; color:var(--muted); }
+  button.mode-btn.active { background:var(--accent); color:#14171c; }
+  #status { margin:14px 0; color:var(--muted); font-size:14px; min-height:20px; }
+  .group { margin-top:22px; border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .group-head { padding:10px 14px; background:#191d25; display:flex; align-items:center; gap:10px; font-size:13px; }
+  .group-head .url { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .badge-nowm { background:var(--green); color:#0c1a10; font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; white-space:nowrap; }
+  .group-error { padding:12px 14px; color:#e8785d; font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:10px; padding:12px; }
   .item { position:relative; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--card); cursor:pointer; }
   .item img, .item video { width:100%; height:110px; object-fit:cover; display:block; background:#0d0f13; }
-  .item .badge { position:absolute; top:6px; left:6px; background:rgba(0,0,0,.6); color:var(--text); font-size:11px; padding:2px 6px; border-radius:4px; }
-  .item .check { position:absolute; top:6px; right:6px; width:18px; height:18px; }
+  .item .icon-tile { height:110px; display:flex; align-items:center; justify-content:center; font-size:32px; }
+  .item .badge { position:absolute; top:6px; left:6px; background:rgba(0,0,0,.65); color:var(--text); font-size:11px; padding:2px 6px; border-radius:4px; }
+  .item .mode-toggle { position:absolute; bottom:6px; left:6px; right:6px; display:flex; gap:4px; }
   .item.selected { outline:3px solid var(--accent); }
-  #downloadBar { position:sticky; bottom:0; background:var(--bg); padding:14px 0; margin-top:10px; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .toolbar { display:flex; justify-content:space-between; align-items:center; margin:18px 0 0; }
+  .toolbar .left { display:flex; gap:10px; align-items:center; }
+  #downloadBar { position:sticky; bottom:0; background:var(--bg); padding:14px 0; margin-top:16px; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
   a.hidden-link { display:none; }
-  .empty { color:var(--muted); font-size:14px; padding:40px 0; text-align:center; }
+  .empty { color:var(--muted); font-size:13px; padding:10px 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Bulk Media Downloader</h1>
-  <p class="sub">Dán link 1 trang web bất kỳ, quét toàn bộ ảnh/video trên trang, chọn và tải hàng loạt về dạng ZIP. Chỉ dùng cho nội dung bạn có quyền tải.</p>
+  <p class="sub">Dán 1 hoặc nhiều link (mỗi dòng 1 link), quét toàn bộ ảnh/video/audio, chọn và tải hàng loạt về 1 file ZIP. Link TikTok tự động tải bản <b>không watermark</b>. Chỉ dùng cho nội dung bạn có quyền tải.</p>
 
+  <textarea id="urlInput" placeholder="https://...&#10;https://... (có thể dán nhiều link, mỗi dòng 1 cái)"></textarea>
   <div class="scan-row">
-    <input type="url" id="urlInput" placeholder="https://..." autofocus>
-    <button id="scanBtn" onclick="scan()">Quét trang</button>
+    <button id="scanBtn" onclick="scan()">Quét</button>
   </div>
   <div id="status"></div>
 
@@ -45,10 +53,11 @@
     <div class="left">
       <button class="secondary" onclick="selectAll(true)">Chọn tất cả</button>
       <button class="secondary" onclick="selectAll(false)">Bỏ chọn</button>
-      <span id="countLabel" style="color:var(--muted);font-size:13px"></span>
     </div>
+    <span id="countLabel" style="color:var(--muted);font-size:13px"></span>
   </div>
-  <div class="grid" id="grid"></div>
+
+  <div id="groups"></div>
 
   <div id="downloadBar" style="display:none">
     <span id="selectedLabel" style="color:var(--muted);font-size:14px"></span>
@@ -57,41 +66,38 @@
 </div>
 
 <script>
-let mediaItems = [];     // {url, kind}
+let allItems = [];   // {kind: 'image'|'video'|'audio'|'ytdlp', url, mode?: 'video'|'audio'}
 let selected = new Set();
-let ytdlpVideo = null;
+
+function splitUrls() {
+  return document.getElementById('urlInput').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+}
 
 async function scan() {
-  const url = document.getElementById('urlInput').value.trim();
+  const urls = splitUrls();
   const status = document.getElementById('status');
   const scanBtn = document.getElementById('scanBtn');
-  if (!url) { status.textContent = 'Nhập URL trước đã.'; return; }
+  if (urls.length === 0) { status.textContent = 'Nhập ít nhất 1 URL.'; return; }
 
-  status.textContent = 'Đang quét trang...';
+  status.textContent = `Đang quét ${urls.length} link...`;
   scanBtn.disabled = true;
-  document.getElementById('grid').innerHTML = '';
+  document.getElementById('groups').innerHTML = '';
   document.getElementById('toolbar').style.display = 'none';
   document.getElementById('downloadBar').style.display = 'none';
+  allItems = [];
   selected = new Set();
-  ytdlpVideo = null;
 
   try {
-    const res = await fetch('/api/scan', {
+    const res = await fetch('/api/scan_batch', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url})
+      body: JSON.stringify({urls})
     });
     const data = await res.json();
     if (!res.ok) { status.textContent = data.error || 'Lỗi không xác định.'; return; }
 
-    mediaItems = [
-      ...data.images.map(u => ({url: u, kind: 'image'})),
-      ...data.videos.map(u => ({url: u, kind: 'video'})),
-    ];
-    ytdlpVideo = data.ytdlp_video || null;
-
-    let extra = ytdlpVideo ? 1 : 0;
-    status.textContent = `Tìm thấy ${mediaItems.length + extra} file. Chọn file muốn tải rồi bấm "Tải ZIP".`;
-    renderGrid();
+    renderGroups(data.results);
+    status.textContent = `Quét xong ${data.results.length} link. Chọn file muốn tải rồi bấm "Tải ZIP".`;
   } catch (e) {
     status.textContent = 'Lỗi kết nối: ' + e;
   } finally {
@@ -99,67 +105,109 @@ async function scan() {
   }
 }
 
-function renderGrid() {
-  const grid = document.getElementById('grid');
-  grid.innerHTML = '';
+function makeCard(kind, url, extra) {
+  const card = document.createElement('div');
+  card.className = 'item selected';
+  const idx = allItems.length;
+  allItems.push(Object.assign({kind, url}, extra || {}));
+  selected.add(idx);
+  card.dataset.idx = idx;
 
-  if (ytdlpVideo) {
-    const card = document.createElement('div');
-    card.className = 'item selected';
-    card.dataset.special = 'ytdlp';
-    card.innerHTML = `<div style="height:110px;display:flex;align-items:center;justify-content:center;font-size:32px">🎬</div>
-                       <span class="badge">video trang (${ytdlpVideo.title})</span>`;
-    card.onclick = () => { card.classList.toggle('selected'); updateCounts(); };
-    grid.appendChild(card);
+  if (kind === 'image') {
+    card.innerHTML = `<img src="${url}" loading="lazy" onerror="this.closest('.item').remove()"><span class="badge">ảnh</span>`;
+  } else if (kind === 'video') {
+    card.innerHTML = `<video src="${url}" muted preload="metadata"></video><span class="badge">video</span>`;
+  } else if (kind === 'audio') {
+    card.innerHTML = `<div class="icon-tile">🎵</div><span class="badge">audio</span>`;
+  } else if (kind === 'ytdlp') {
+    card.innerHTML = `<div class="icon-tile">🎬</div><span class="badge">${extra.title || 'video trang'}</span>
+      <div class="mode-toggle">
+        <button type="button" class="mode-btn active" data-mode="video">Video</button>
+        <button type="button" class="mode-btn" data-mode="audio">MP3</button>
+      </div>`;
   }
 
-  mediaItems.forEach((item, i) => {
-    selected.add(i); // mặc định chọn hết, bỏ chọn thủ công nếu không muốn
-    const card = document.createElement('div');
-    card.className = 'item selected';
-    card.dataset.index = i;
-    const media = item.kind === 'image'
-      ? `<img src="${item.url}" loading="lazy" onerror="this.closest('.item').remove()">`
-      : `<video src="${item.url}" muted preload="metadata"></video>`;
-    card.innerHTML = `${media}<span class="badge">${item.kind}</span>`;
-    card.onclick = () => {
-      card.classList.toggle('selected');
-      if (selected.has(i)) selected.delete(i); else selected.add(i);
-      updateCounts();
-    };
-    grid.appendChild(card);
+  card.addEventListener('click', (e) => {
+    if (e.target.classList.contains('mode-btn')) {
+      e.stopPropagation();
+      allItems[idx].mode = e.target.dataset.mode;
+      card.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b === e.target));
+      return;
+    }
+    card.classList.toggle('selected');
+    if (selected.has(idx)) selected.delete(idx); else selected.add(idx);
+    updateCounts();
   });
 
-  if (mediaItems.length === 0 && !ytdlpVideo) {
-    grid.innerHTML = '<div class="empty">Không tìm thấy ảnh/video nào.</div>';
-  }
+  return card;
+}
 
-  document.getElementById('toolbar').style.display = mediaItems.length ? 'flex' : 'none';
-  document.getElementById('downloadBar').style.display = 'flex';
+function renderGroups(results) {
+  const container = document.getElementById('groups');
+  container.innerHTML = '';
+
+  results.forEach(r => {
+    const group = document.createElement('div');
+    group.className = 'group';
+
+    const head = document.createElement('div');
+    head.className = 'group-head';
+    const nowm = r.source === 'tiktok_no_watermark';
+    head.innerHTML = `<span class="url" title="${r.url}">${r.url}</span>${nowm ? '<span class="badge-nowm">✓ Không watermark</span>' : ''}`;
+    group.appendChild(head);
+
+    if (r.error) {
+      const err = document.createElement('div');
+      err.className = 'group-error';
+      err.textContent = r.error;
+      group.appendChild(err);
+      container.appendChild(group);
+      return;
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    (r.images || []).forEach(u => grid.appendChild(makeCard('image', u)));
+    (r.videos || []).forEach(u => grid.appendChild(makeCard('video', u)));
+    (r.audios || []).forEach(u => grid.appendChild(makeCard('audio', u)));
+    if (r.ytdlp_video) {
+      grid.appendChild(makeCard('ytdlp', r.ytdlp_video.page_url, {title: r.ytdlp_video.title, mode: 'video'}));
+    }
+    group.appendChild(grid);
+    container.appendChild(group);
+  });
+
+  document.getElementById('toolbar').style.display = allItems.length ? 'flex' : 'none';
+  document.getElementById('downloadBar').style.display = allItems.length ? 'flex' : 'none';
   updateCounts();
 }
 
 function selectAll(on) {
   document.querySelectorAll('.item').forEach(card => {
     card.classList.toggle('selected', on);
-    if (card.dataset.index !== undefined) {
-      const i = parseInt(card.dataset.index);
-      if (on) selected.add(i); else selected.delete(i);
-    }
+    const i = parseInt(card.dataset.idx);
+    if (on) selected.add(i); else selected.delete(i);
   });
   updateCounts();
 }
 
 function updateCounts() {
-  const n = selected.size + (document.querySelector('.item[data-special="ytdlp"].selected') ? 1 : 0);
-  document.getElementById('countLabel').textContent = `${mediaItems.length} file tìm thấy`;
-  document.getElementById('selectedLabel').textContent = `Đã chọn ${n} file`;
+  document.getElementById('countLabel').textContent = `${allItems.length} file tìm thấy`;
+  document.getElementById('selectedLabel').textContent = `Đã chọn ${selected.size} file`;
 }
 
 async function downloadSelected() {
-  const urls = [...selected].map(i => mediaItems[i].url);
-  const wantYtdlp = !!document.querySelector('.item[data-special="ytdlp"].selected');
-  if (urls.length === 0 && !wantYtdlp) { alert('Chưa chọn file nào.'); return; }
+  const urls = [];
+  const ytdlpItems = [];
+  selected.forEach(i => {
+    const item = allItems[i];
+    if (item.kind === 'ytdlp') {
+      ytdlpItems.push({page_url: item.url, title: item.title, mode: item.mode || 'video'});
+    } else {
+      urls.push(item.url);
+    }
+  });
+  if (urls.length === 0 && ytdlpItems.length === 0) { alert('Chưa chọn file nào.'); return; }
 
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
@@ -167,7 +215,7 @@ async function downloadSelected() {
   try {
     const res = await fetch('/api/download', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls, ytdlp_video: wantYtdlp ? ytdlpVideo : null})
+      body: JSON.stringify({urls, ytdlp_items: ytdlpItems})
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -191,7 +239,7 @@ async function downloadSelected() {
 }
 
 document.getElementById('urlInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') scan();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) scan();
 });
 </script>
 </body>
