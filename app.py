@@ -36,6 +36,21 @@ TIKTOK_HOSTS = ("tiktok.com", "douyin.com")  # cùng công ty (ByteDance), tikwm
 MAX_URLS_PER_SCAN = 20
 MAX_ITEMS_PER_DOWNLOAD = 60
 
+# Nếu đặt 1 file cookies.txt (định dạng Netscape, xuất bằng extension trình
+# duyệt như "Get cookies.txt LOCALLY") cùng thư mục với app.py, yt-dlp sẽ
+# dùng để tải các trang cần đăng nhập / chống bot nghiêm (Douyin, Instagram
+# riêng tư...). KHÔNG commit file này lên git -- đã thêm vào .gitignore vì
+# nó chứa phiên đăng nhập thật của bạn, lộ ra là người khác đăng nhập được
+# tài khoản của bạn.
+COOKIES_FILE = Path(__file__).resolve().parent / "cookies.txt"
+
+
+def ytdlp_base_opts() -> dict:
+    opts = {"quiet": True, "noplaylist": True}
+    if COOKIES_FILE.exists():
+        opts["cookiefile"] = str(COOKIES_FILE)
+    return opts
+
 
 class ScanFailed(Exception):
     pass
@@ -183,7 +198,7 @@ def scan_page(page_url: str) -> dict:
     try:
         import yt_dlp
 
-        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, "noplaylist": True}) as ydl:
+        with yt_dlp.YoutubeDL({**ytdlp_base_opts(), "skip_download": True}) as ydl:
             info = ydl.extract_info(page_url, download=False)
             if info and info.get("url"):
                 title = re.sub(r"[^\w\-. ]", "_", info.get("title") or "video")[:80]
@@ -285,11 +300,7 @@ def _download_one(url: str, tmp_dir: Path, index: int):
 def _download_with_ytdlp(page_url: str, tmp_dir: Path, audio_only: bool = False):
     import yt_dlp
 
-    opts = {
-        "outtmpl": str(tmp_dir / "%(title).80s.%(ext)s"),
-        "quiet": True,
-        "noplaylist": True,
-    }
+    opts = {**ytdlp_base_opts(), "outtmpl": str(tmp_dir / "%(title).80s.%(ext)s")}
     if audio_only:
         # Cần có ffmpeg trong PATH của máy -- nếu thiếu, yt-dlp báo lỗi rõ
         # ràng, được ghi vào file LOI_*.txt trong ZIP kết quả thay vì crash.

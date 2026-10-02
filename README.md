@@ -45,6 +45,17 @@ Muốn tắt: mở Task Manager → tìm tiến trình `pythonw.exe` → End Tas
 
 Chỉ cần cho tính năng "chỉ lấy âm thanh (MP3)" của video YouTube/... (không cần cho TikTok hay tải video thường). Trên Windows: tải `ffmpeg` tại [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (bản "release essentials"), giải nén, thêm thư mục `bin` bên trong vào PATH của Windows (Settings → System → About → Advanced system settings → Environment Variables → Path → New). Mở lại Command Prompt để nhận PATH mới, gõ `ffmpeg -version` để kiểm tra đã nhận chưa. Không cài thì tool vẫn tải video thường bình thường, chỉ riêng nút MP3 báo lỗi.
 
+## Tải được site cần đăng nhập / chặn bot mạnh (Douyin, Instagram riêng tư...)
+
+Một số site (ví dụ Douyin gần đây) báo lỗi kiểu `Fresh cookies needed` — cần "cookie" (giống phiên đăng nhập trình duyệt) mới tải được, kể cả nội dung công khai. Cách lấy và dùng:
+
+1. Cài extension trình duyệt **"Get cookies.txt LOCALLY"** (Chrome Web Store / Edge Add-ons).
+2. Mở trang đó (vd douyin.com) trong trình duyệt, đăng nhập nếu cần, bấm extension → xuất file `cookies.txt`.
+3. Copy file `cookies.txt` vào đúng thư mục chứa `app.py` (cùng chỗ với `requirements.txt`).
+4. Khởi động lại server (tắt rồi chạy lại `python app.py`) — tool tự nhận file này cho mọi lượt tải sau.
+
+**Cảnh báo bảo mật:** `cookies.txt` = phiên đăng nhập thật của bạn (như mật khẩu) — **không gửi/chia sẻ file này cho ai, không commit lên GitHub** (đã tự động bị bỏ qua qua `.gitignore`). Xoá file đi bất cứ lúc nào để ngừng dùng cookie.
+
 ## Giới hạn
 
 - Tối đa 20 link/lần quét, 60 file/lần tải — tránh vô tình tải quá tải máy hoặc gây tải nặng cho site đích.
