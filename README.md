@@ -5,8 +5,10 @@ Dán 1 hoặc nhiều link, quét toàn bộ ảnh/video/audio, chọn và tải
 **Tính năng:**
 - Dán nhiều link cùng lúc (mỗi dòng 1 link) — quét và tải gộp 1 lần.
 - **TikTok: tự động tải bản KHÔNG watermark** (lấy thẳng link gốc từ API công khai, không phải xử lý ảnh xoá logo) + tải kèm nhạc nền nếu muốn.
+- **Tải cả playlist/kênh/trang cá nhân khi dán 1 link** (bật checkbox tương ứng): YouTube playlist/channel, trang cá nhân TikTok — tối đa 30 video/lần để tránh quá tải.
 - Video khác (YouTube, Twitter/X, Vimeo...): chọn tải nguyên video hoặc chỉ tách lấy âm thanh MP3.
 - Giao diện báo rõ khi nào đã lấy được bản không watermark (nhãn xanh).
+- Hỗ trợ cookie đăng nhập (`cookies.txt`) cho site chặn bot mạnh.
 
 ## Chạy
 
@@ -56,11 +58,19 @@ Một số site (ví dụ Douyin gần đây) báo lỗi kiểu `Fresh cookies n
 
 **Cảnh báo bảo mật:** `cookies.txt` = phiên đăng nhập thật của bạn (như mật khẩu) — **không gửi/chia sẻ file này cho ai, không commit lên GitHub** (đã tự động bị bỏ qua qua `.gitignore`). Xoá file đi bất cứ lúc nào để ngừng dùng cookie.
 
-## Giới hạn
+## Giới hạn (nói thật, không hứa suông "tải được mọi thứ")
 
-- Tối đa 20 link/lần quét, 60 file/lần tải — tránh vô tình tải quá tải máy hoặc gây tải nặng cho site đích.
+- Tối đa 20 link/lần quét, 100 file/lần tải, 30 video/lần khi bật playlist/kênh — tránh vô tình tải quá tải máy hoặc gây tải nặng cho site đích.
 - TikTok: nếu API `tikwm.com` tạm thời lỗi/quá tải, tool tự rơi về cách quét thường (không đảm bảo chắc chắn còn bản không watermark trong trường hợp này).
+- **Douyin hiện không ổn định** — extractor Douyin của chính thư viện `yt-dlp` hay bị gãy vì Douyin đổi cơ chế chống bot liên tục (báo lỗi `Fresh cookies needed` dù đã có `cookies.txt`). Đây là vấn đề ở phía `yt-dlp`/Douyin, không có cách khắc phục triệt để từ phía tool này — chạy `pip install -U yt-dlp` định kỳ để cập nhật bản vá mới nhất là cách tốt nhất hiện có.
 - Chỉ quét được nội dung có trong HTML tải về ban đầu (với các link không phải TikTok) — trang dùng JavaScript để load ảnh/video động (infinite scroll, SPA nặng React/Vue) có thể cần cuộn/tương tác trước nên quét không ra hết.
-- `yt-dlp` hỗ trợ hàng nghìn site nhưng không phải tất cả — một số nền tảng có thể chặn hoặc cần đăng nhập.
+- `yt-dlp` hỗ trợ hàng nghìn site nhưng không phải tất cả — một số nền tảng có thể chặn hoặc cần đăng nhập (dùng `cookies.txt`, xem mục trên).
 - Đây là tool chạy local/cá nhân (dữ liệu job giữ trong RAM), không thiết kế để deploy public nhiều người dùng cùng lúc.
 - **Chỉ dùng để tải nội dung bạn có quyền tải** (của bạn, public domain, hoặc được phép) — tôn trọng bản quyền và điều khoản dịch vụ của từng website.
+
+## Cập nhật `yt-dlp` định kỳ
+
+`yt-dlp` sửa lỗi extractor liên tục (site đổi cơ chế chống bot gần như hàng tuần). Nên chạy định kỳ:
+```
+pip install -U yt-dlp
+```
